@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+.env
+
+# Analysis Temp Files
+ANALYSIS_*.json
+analysis_output.json
+analysis_*.json
+
+# OS
+.DS_Store
+Thumbs.db
