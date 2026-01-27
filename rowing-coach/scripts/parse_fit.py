@@ -323,7 +323,7 @@ def find_best_effort(records, target_dist_m):
             
     return best_effort
 
-def analyze_rowing(data):
+def analyze_rowing(data, max_hr=190, resting_hr=60):
     """
     Perform specific rowing analysis.
     Recalculate average metrics for laps if they are missing/zero using record data.
@@ -337,6 +337,8 @@ def analyze_rowing(data):
     session["avg_500m_split"] = calculate_split(avg_speed)
     
     # Pre-parse record timestamps for efficiency
+
+    
     parsed_records = []
     for r in records:
         ts_str = r.get("timestamp")
@@ -434,6 +436,7 @@ def analyze_rowing(data):
     data["analysis"]["best_1k"] = find_best_effort(cleaned_records, 1000)
     data["analysis"]["best_2k"] = find_best_effort(cleaned_records, 2000)
     data["analysis"]["best_4k"] = find_best_effort(cleaned_records, 4000)
+    data["analysis"]["best_10k"] = find_best_effort(cleaned_records, 10000)
 
     # Store for Charting
     data["processed_records"] = cleaned_records
@@ -458,6 +461,77 @@ def analyze_rowing(data):
         data["location_name"] = get_location_name(start_lat, start_lon)
     else:
         data["location_name"] = None
+
+    # HR Analysis (New)
+    hr_analysis = {
+        "max_hr_observed": 0,
+        "avg_hr_observed": 0,
+        "resting_hr_observed": 0,
+        "max_hr_config": max_hr,
+        "resting_hr_config": resting_hr,
+        "zones": {} # UT2, UT1, AT, TR, AN
+    }
+
+    # Ensure we use processed records for HR analysis if avail, else raw
+    recs_for_hr = data.get("processed_records", records)
+    valid_hrs = [float(r.get("heart_rate", 0) or 0) for r in recs_for_hr if r.get("heart_rate")]
+    valid_hrs = [h for h in valid_hrs if h > 0]
+    
+    if valid_hrs:
+        hr_analysis["max_hr_observed"] = int(max(valid_hrs))
+        hr_analysis["avg_hr_observed"] = int(sum(valid_hrs) / len(valid_hrs))
+        hr_analysis["resting_hr_observed"] = int(min(valid_hrs))
+
+        # Zone Calculation (HRR)
+        # Target = (Max - Rest) * % + Rest
+        hr_reserve = max_hr - resting_hr
+        
+        zones_defs = {
+            "UT2": (0.55, 0.70),
+            "UT1": (0.70, 0.80),
+            "AT":  (0.80, 0.85),
+            "TR":  (0.85, 0.95),
+            "AN":  (0.95, 1.00)
+        }
+        
+        zone_counts = {k: 0 for k in zones_defs}
+        
+        for hr in valid_hrs:
+            # Calculate intensity %
+            if hr_reserve > 0:
+                intensity = (hr - resting_hr) / hr_reserve
+            else:
+                intensity = 0
+            
+            # Determine zone
+            matched = False
+            for z_name, (low, high) in zones_defs.items():
+                if low <= intensity < high:
+                    zone_counts[z_name] += 1
+                    matched = True
+                    break
+            
+            # Handle values >= 100% or slightly above AN range
+            if not matched:
+                if intensity >= 0.95: 
+                    zone_counts["AN"] += 1
+                # Values below 0.55 are effectively "Warmup/Rest" not categorized
+        
+        total_valid = len(valid_hrs)
+        for z_name in zones_defs: # Preserves order
+            seconds = zone_counts[z_name]
+            if total_valid > 0:
+                pct = round((seconds / total_valid) * 100, 1)
+            else:
+                pct = 0
+            m, s = divmod(seconds, 60)
+            hr_analysis["zones"][z_name] = {
+                "seconds": seconds,
+                "percent": pct,
+                "time_str": f"{m}:{s:02}"
+            }
+            
+    data["heart_rate_analysis"] = hr_analysis
 
     return data
 
@@ -723,6 +797,7 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
                 "time_sec": l.get("total_timer_time", 0),
                 "avg_pace": l.get("avg_500m_split", "N/A"),
                 "avg_cadence": l.get("avg_cadence", 0),
+                "avg_heart_rate": l.get("avg_heart_rate", 0),
                 "dps": round(l.get("avg_speed", 0) / (l.get("avg_cadence", 0) / 60), 1) if l.get("avg_cadence", 0) > 0 else "N/A",
                 "type": l.get("segment_type", "Unknown")
             }
@@ -732,8 +807,15 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
             "best_500m": analysis.get("best_500m", {}),
             "best_1k": analysis.get("best_1k", {}),
             "best_2k": analysis.get("best_2k", {}),
-            "best_4k": analysis.get("best_4k", {})
-        }
+            "best_4k": analysis.get("best_4k", {}),
+            "best_10k": analysis.get("best_10k", {})
+        },
+        "heart_rate_analysis": data.get("heart_rate_analysis", {}),
+        # Include Raw Data for Regeneration
+        "laps": laps,
+        "session": session,
+        "processed_records": data.get("processed_records", []),
+        "location_name": data.get("location_name")
     }
     
     # --- INDOOR REST DETECTION ---
@@ -830,8 +912,14 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
     
     json_path = os.path.join(output_dir, f"ANALYSIS_{ts}.json")
     
+    # Custom encoder for datetime objects
+    def json_serializer(obj):
+        if isinstance(obj, datetime.datetime):
+            return obj.isoformat()
+        raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+    
     with open(json_path, 'w', encoding='utf-8') as f:
-        json.dump(analysis_summary, f, indent=2, ensure_ascii=False)
+        json.dump(analysis_summary, f, indent=2, ensure_ascii=False, default=json_serializer)
     
     return json_path
 
@@ -994,10 +1082,11 @@ def generate_pacing_chart(data, output_dir, file_prefix):
         # Order: 500m (Top), 1k, 2k, 4k (Bottom)
         
         layout_config = {
-            "best_500m": {"color": "red", "label": "500m", "y_pos": 0.28},
-            "best_1k": {"color": "green", "label": "1k", "y_pos": 0.20},
-            "best_2k": {"color": "blue", "label": "2k", "y_pos": 0.12},
-            "best_4k": {"color": "purple", "label": "4k", "y_pos": 0.04}
+            "best_500m": {"color": "red", "label": "500m", "y_pos": 0.36},
+            "best_1k": {"color": "green", "label": "1k", "y_pos": 0.28},
+            "best_2k": {"color": "blue", "label": "2k", "y_pos": 0.20},
+            "best_4k": {"color": "purple", "label": "4k", "y_pos": 0.12},
+            "best_10k": {"color": "orange", "label": "10k", "y_pos": 0.04}
         }
 
         
@@ -1441,28 +1530,34 @@ def generate_share_image(data, chart_buffer, review_text, output_dir, file_prefi
             # Paragraph Break - larger gap between sections
             lines_to_draw.append(("", None, None, 0, 30)) # 30px spacer
             continue
+        
+        # Skip the main "## Coach Review" header since we draw our own title
+        if line.startswith("## "):
+            continue
             
         if line.startswith("### "):
-            # Header - use accent color to stand out
+            # Header - use accent color with emoji preserved
             txt = line.replace("### ", "").replace("**", "")
-            wrapped = wrap_text(txt, font_header, img_width - 2*padding)
+            wrapped = wrap_text(txt, font_header, img_width - 2*padding)  # Full width
             for i, wl in enumerate(wrapped):
-                pad = 40 if i == 0 else 8  # More space before headers
+                pad = 25 if i == 0 else 5  # Space before header, tight for wrapped
                 lines_to_draw.append((wl, font_header, accent_color, 0, pad))
         
         elif line.startswith("* ") or line.startswith("- "):
-            # Bullet - proper indentation for wrapped lines
-            txt = line.replace("* ", "• ").replace("- ", "• ").replace("**", "")
-            wrapped = wrap_text(txt, font_body, img_width - 2*padding)  # Full width
+            # Bullet - consistent indentation with clean formatting
+            txt = line[2:].replace("**", "")  # Remove bullet markers and bold
+            wrapped = wrap_text("• " + txt, font_body, img_width - 2*padding - 20)  # Slight indent for bullet
             for i, wl in enumerate(wrapped):
-                x_off = 20 if i == 0 else 45  # Indent wrapped lines more
-                pad = 15 if i == 0 else 6
-                lines_to_draw.append((wl, font_body, "#444444", x_off, pad))
+                x_off = 10  # Consistent indent for all lines
+                if i > 0:
+                    wl = "  " + wl.lstrip()  # Indent continuation without extra bullet
+                pad = 8 if i == 0 else 3
+                lines_to_draw.append((wl, font_body, "#333333", x_off, pad))
                 
         elif line.startswith("> "):
             # Quote - styled with left border effect (indent + italic color)
             txt = line.replace("> ", "").replace("**", "")  # Remove quote marker
-            wrapped = wrap_text(txt, font_body, img_width - 2*padding - 30)  # Slight indent for quote
+            wrapped = wrap_text(txt, font_body, img_width - 2*padding - 40)  # Indent for quote border
             for i, wl in enumerate(wrapped):
                 pad = 20 if i == 0 else 8
                 lines_to_draw.append((wl, font_body, "#1f77b4", 30, pad))  # Blue quote
@@ -1476,16 +1571,15 @@ def generate_share_image(data, chart_buffer, review_text, output_dir, file_prefi
                 
     # 2. Canvas Calculation
     # Measure total height - comfortable line heights
-    total_review_h = 120 # Title + buffer
+    total_review_h = 100 # Title + buffer
     for txt, fnt, col, x, pad in lines_to_draw:
-        h = 35  # Comfortable body line height
-        if fnt == font_header: h = 50  # Header line height
+        h = 28  # Tighter body line height
+        if fnt == font_header: h = 38  # Header line height
         if not txt: h = 0 # spacer only padding
         total_review_h += h + pad
         
-    # Add extra buffer at bottom (very generous to ensure all content fits)
-    # Add extra buffer at bottom (very generous to ensure all content fits)
-    blk_review = Image.new("RGB", (img_width, total_review_h + 300), bg_color)
+    # Add minimal buffer at bottom
+    blk_review = Image.new("RGB", (img_width, total_review_h + 50), bg_color)
     d_rev_lines = ImageDraw.Draw(blk_review)
     # d_rev = ImageDraw.Draw(blk_review) # Replaced
     
@@ -1494,20 +1588,19 @@ def generate_share_image(data, chart_buffer, review_text, output_dir, file_prefi
         pilmoji.text((padding, 40), "👨‍🏫 Coach Review", font=font_header, fill=text_color)
         d_rev_lines.line([(padding, 90), (padding + 300, 90)], fill="#EEEEEE", width=4)
         
-        curr_y = 120
+        curr_y = 100
         for txt, fnt, col, x, pad in lines_to_draw:
             curr_y += pad
             if txt:
                 pilmoji.text((padding + x, curr_y), txt, font=fnt, fill=col)
-                line_h = 35  # Match the calculation above
-                if fnt == font_header: line_h = 50
+                line_h = 28  # Match the calculation above
+                if fnt == font_header: line_h = 38
                 curr_y += line_h
     
     blocks.append(blk_review)
     
-    # Combine
     total_h = sum(b.height for b in blocks)
-    final_img = Image.new("RGB", (img_width, total_h + 100), bg_color)
+    final_img = Image.new("RGB", (img_width, total_h + 60), bg_color)  # Just enough for footer
     
     curr_y = 0
     for b in blocks:
@@ -1525,9 +1618,10 @@ def generate_share_image(data, chart_buffer, review_text, output_dir, file_prefi
     final_img.save(share_path)
     return share_path
 
-def generate_training_report(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTING_HR):
+def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, forced_review=None):
     """
-    Generate a markdown training report from the analyzed data.
+    Generates a Markdown training report.
+    If forced_review is provided, it uses that text instead of extracting from existing file or generating placeholder.
     """
     session = data.get("session", {})
     laps = data.get("laps", [])
@@ -1563,15 +1657,24 @@ def generate_training_report(data, input_file_path, max_hr=MAX_HR, resting_hr=RE
        prefix = "ROW" 
 
     # 2. Determine Timestamp
-    if session.get("start_time"):
+    # 2. Determine Timestamp
+    # Ensure datetime is imported if not at top level, though it should be.
+    import datetime 
+    
+    start_t = session.get("start_time")
+    file_time_str = "UNKNOWN_DATE"
+    if start_t:
         try:
-            dt_utc = datetime.datetime.fromisoformat(str(session.get("start_time")))
+            if isinstance(start_t, datetime.datetime):
+                dt_utc = start_t
+            else:
+                dt_utc = datetime.datetime.fromisoformat(str(start_t))
+            
+            # Localize
             dt_local = dt_utc + datetime.timedelta(hours=8)
             file_time_str = dt_local.strftime("%Y%m%d_%H%M")
-        except:
-            file_time_str = "UNKNOWN_DATE"
-    else:
-        file_time_str = "UNKNOWN_DATE"
+        except Exception as e:
+            pass
     
     base_filename = f"{prefix}_{file_time_str}"
     output_filename = f"{base_filename}.md"
@@ -1594,11 +1697,15 @@ def generate_training_report(data, input_file_path, max_hr=MAX_HR, resting_hr=RE
          try:
              with open(output_path, 'r', encoding='utf-8') as old_f:
                  content = old_f.read()
-                 start_marker = "## 👨‍🏫 教练点评 (Coach Review)\n\n"
+                 # Relaxed match
+                 header_str = "## 👨‍🏫 教练点评 (Coach Review)"
+                 s_idx = content.find(header_str)
                  
-                 s_idx = content.find(start_marker)
                  if s_idx != -1:
-                     sub = content[s_idx + len(start_marker):]
+                     # Start after header + whitespace
+                     sub_start = s_idx + len(header_str)
+                     sub = content[sub_start:].lstrip()
+                     
                      # Look for next section header or horizontal rule
                      import re
                      match = re.search(r'\n(## |---)' , sub)
@@ -1670,6 +1777,9 @@ def generate_training_report(data, input_file_path, max_hr=MAX_HR, resting_hr=RE
         
         calc_elapsed_time = 0
         calc_move_time = 0
+        avg_cad_val = 0
+        avg_hr_val = 0
+        avg_speed_val = 0
         
         if laps:
             for l in laps:
@@ -1741,7 +1851,7 @@ def generate_training_report(data, input_file_path, max_hr=MAX_HR, resting_hr=RE
                 note = "Rest"
             else:
                 # Use new centralized classification function
-                note = classify_training_zone(hr, cad, max_hr, resting_hr)
+                note = classify_training_zone(hr, cad, max_hr_val, resting_hr_val)
             
             # No special formatting - plain table row
             row_str = f"| {num} | {dur_str} | {int(dist)}m | {pace} | {cad} | {hr_str} | {dps_str} | {note} |"
@@ -1759,20 +1869,26 @@ def generate_training_report(data, input_file_path, max_hr=MAX_HR, resting_hr=RE
             best_1k = data.get("analysis", {}).get("best_1k")
             best_2k = data.get("analysis", {}).get("best_2k")
             best_4k = data.get("analysis", {}).get("best_4k")
+            best_10k = data.get("analysis", {}).get("best_10k")
             
             if best_500: f.write(f"*   **最快 500m**: `{best_500['pace']}` (用时 {best_500['time']})\n")
             if best_1k: f.write(f"*   **最快 1000m**: `{best_1k['pace']}` (用时 {best_1k['time']})\n")
             if best_2k: f.write(f"*   **最快 2000m**: `{best_2k['pace']}` (用时 {best_2k['time']})\n")
             if best_4k: f.write(f"*   **最快 4000m**: `{best_4k['pace']}` (用时 {best_4k['time']})\n")
+            if best_10k: f.write(f"*   **最快 10000m**: `{best_10k['pace']}` (用时 {best_10k['time']})\n")
                 
-            if not any([best_500, best_1k, best_2k, best_4k]):
+            if not any([best_500, best_1k, best_2k, best_4k, best_10k]):
                 f.write("数据不足，无法计算最佳分段。\n")
                 
             f.write("\n---\n")
         f.write("## 👨‍🏫 教练点评 (Coach Review)\n\n")
         
         # Expert System Review
-        if existing_review:
+        if forced_review:
+             f.write(forced_review + "\n\n")
+             print(f"Using provided Coach Review via CLI arguments.", file=sys.stderr)
+             final_review = forced_review
+        elif existing_review:
              f.write(existing_review + "\n\n")
              print(f"Preserved existing Coach Review for {output_filename}", file=sys.stderr)
              final_review = existing_review
@@ -1788,74 +1904,135 @@ def generate_training_report(data, input_file_path, max_hr=MAX_HR, resting_hr=RE
 
 def main():
     parser = argparse.ArgumentParser(description="Parse FIT file for Rowing Coach analysis.")
-    parser.add_argument("file_path", help="Path to the FIT file")
+    
+    parser.add_argument("file_path", nargs='?', help="Path to the FIT file")
     parser.add_argument("--max-hr", type=int, default=MAX_HR, help="Maximum Heart Rate")
     parser.add_argument("--resting-hr", type=int, default=RESTING_HR, help="Resting Heart Rate")
+    parser.add_argument("--regen-share", metavar="MD_FILE", help="Regenerate share image from existing markdown report")
     
     args = parser.parse_args()
 
+    # Mode: Regenerate share image from existing report
+    if args.regen_share:
+        md_path = args.regen_share
+        if not os.path.exists(md_path):
+            print(f"Error: Markdown file not found: {md_path}")
+            sys.exit(1)
+        
+        # Find corresponding JSON file
+        md_dir = os.path.dirname(md_path) or "."
+        md_base = os.path.basename(md_path)
+        
+        # Extract timestamp from filename (e.g., ERG_20260120_2117.md -> 20260120)
+        import re
+        match = re.search(r'(\d{8})_(\d{4})', md_base)
+        if not match:
+            print(f"Error: Cannot extract timestamp from filename: {md_base}")
+            sys.exit(1)
+        
+        # Find matching JSON file
+        json_files = [f for f in os.listdir(md_dir) if f.startswith('ANALYSIS_') and f.endswith('.json')]
+        json_path = None
+        for jf in json_files:
+            if match.group(1) in jf:
+                json_path = os.path.join(md_dir, jf)
+                break
+        
+        if not json_path or not os.path.exists(json_path):
+            print(f"Error: Cannot find matching JSON file for {md_base}")
+            sys.exit(1)
+        
+        # Load JSON
+        with open(json_path, 'r', encoding='utf-8') as f:
+            json_data = json.load(f)
+        
+        # Extract review text from markdown
+        with open(md_path, 'r', encoding='utf-8') as f:
+            md_content = f.read()
+        
+        review_start = md_content.find("## 👨‍🏫 教练点评")
+        if review_start == -1:
+            review_start = md_content.find("## Coach Review")
+        
+        review_text = ""
+        if review_start != -1:
+            review_section = md_content[review_start:]
+            # Find end (next --- or end of file)
+            review_end = review_section.find("\n---")
+            if review_end != -1:
+                review_text = review_section[:review_end].strip()
+            else:
+                review_text = review_section.strip()
+        
+        # Convert datetime strings back to datetime objects in processed_records
+        processed_records = json_data.get('processed_records', [])
+        for rec in processed_records:
+            if 'dt' in rec and isinstance(rec['dt'], str):
+                try:
+                    rec['dt'] = datetime.datetime.fromisoformat(rec['dt'])
+                except:
+                    pass
+        
+        # Reconstruct analyzed_data from JSON for chart generation
+        analyzed_data = {
+            'session': json_data.get('session', {}),
+            'laps': json_data.get('laps', []),
+            'processed_records': processed_records,
+            'location_name': json_data.get('location_name'),
+            'analysis': {
+                'best_500m': json_data.get('best_efforts', {}).get('best_500m', {}),
+                'best_1k': json_data.get('best_efforts', {}).get('best_1k', {}),
+                'best_2k': json_data.get('best_efforts', {}).get('best_2k', {}),
+                'best_4k': json_data.get('best_efforts', {}).get('best_4k', {}),
+                'best_10k': json_data.get('best_efforts', {}).get('best_10k', {}),
+            },
+            'heart_rate_analysis': json_data.get('heart_rate_analysis', {}),
+        }
+        
+        # Generate chart
+        f_prefix = os.path.splitext(md_base)[0]
+        chart_buffer = generate_pacing_chart(analyzed_data, md_dir, f_prefix)
+        
+        # Generate share image
+        if chart_buffer:
+            share_path = generate_share_image(analyzed_data, chart_buffer, review_text, md_dir, f_prefix)
+            print(f"✅ Share image regenerated: {share_path}")
+        else:
+            print("⚠️ Could not generate chart (missing processed_records in JSON)")
+        
+        sys.exit(0)
+
+    # Normal mode: Parse FIT file
+    if not args.file_path:
+        parser.error("file_path is required unless using --regen-share")
+    
     parsed_data = parse_fit(args.file_path)
     
     if parsed_data:
-        analyzed_data = analyze_rowing(parsed_data)
+        analyzed_data = analyze_rowing(parsed_data, args.max_hr, args.resting_hr)
         
-        # Export analysis JSON for LLM coach review
+        # Export analysis JSON (Keep this as an artifact)
         json_path = export_analysis_json(analyzed_data, args.file_path, args.max_hr, args.resting_hr)
-        
-        # Generate Post (with placeholder coach review)
+        print(f"✅ Analysis JSON generated: {json_path}")
+
+        # Generate Report
         post_path, chart_buffer, review_text = generate_training_report(analyzed_data, args.file_path, args.max_hr, args.resting_hr)
         
-        # Determine prefix for share image
-        base_name = os.path.splitext(os.path.basename(args.file_path))[0] 
-
+        # Generate Share Image
         share_path = None
         if post_path and chart_buffer:
-             # Extract prefix from output filename logic or just use base_name from chart (which we dont have as path anymore)
-             # generate_training_report calculates timestamped name.
-             # Ideally we return it? 
-             # let's just reuse the timestamp logic or pass a clean prefix.
-             
-             # Actually we can get the prefix from the generated markdown filename
              md_name = os.path.basename(post_path)
              f_prefix = os.path.splitext(md_name)[0]
-             
              share_path = generate_share_image(analyzed_data, chart_buffer, review_text, os.path.dirname(post_path), f_prefix)
 
-        # Add paths to JSON for reference
-        analyzed_data["analysis_json_path"] = json_path
-        analyzed_data["generated_post_path"] = post_path
-        analyzed_data["generated_share_path"] = share_path
-        
-        # Remove processed_records before dumping JSON (contains datetime objects)
-        if "processed_records" in analyzed_data:
-            del analyzed_data["processed_records"]
-
-        # Cleanup JSON
-        # if json_path and os.path.exists(json_path):
-        #     try:
-        #         os.remove(json_path)
-        #         # print(f"Cleaned up temporary JSON: {json_path}")
-        #     except Exception as e:
-        #         print(f"Warning: Could not delete JSON {json_path}: {e}")
-                
-        # Make paths JSON friendly for final print (if needed) or just done
-        print(json.dumps(analyzed_data, indent=2))
-        
-        print(f"\n✅ 数据分析完成！", file=sys.stderr)
-        # print(f"📊 分析数据已导出: {json_path}", file=sys.stderr) # Removed from output since deleted
-        print(f"📝 部分报告已生成: {post_path}", file=sys.stderr)
+        print(f"\n✅ 报告生成完成！")
+        print(f"📝 Markdown: {post_path}")
         if share_path:
-            print(f"🖼️ 分享长图已生成: {share_path}", file=sys.stderr)
-        print(f"\n💡 提示: 使用 'rowing-coach' skill 获取完整的AI教练点评", file=sys.stderr)
-        
-        # Cleanup: JSON file is preserved for LLM usage
-        # if json_path and os.path.exists(json_path):
-        #     try:
-        #         os.remove(json_path)
-        #         print(f"🗑️ 中间文件已清理: {json_path}", file=sys.stderr)
-        #     except OSError as e:
-        #         print(f"⚠️ 清理失败: {e}", file=sys.stderr)
+            print(f"🖼️ Share Image: {share_path}")
+
     else:
         sys.exit(1)
+
 if __name__ == "__main__":
     main()
+

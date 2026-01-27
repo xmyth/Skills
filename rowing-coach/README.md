@@ -45,28 +45,21 @@ pip install fitparse matplotlib pandas geopy
 
 This skill is designed to work seamlessly with the **Antigravity** agentic assistant. It leverages task management and professional coaching guidelines to provide a comprehensive training review.
 
-### 1. Interactive Analysis
+### Automatic 5-Step Workflow
 Simply drag and drop your `.fit` file into the Antigravity chat and ask for an analysis:
 
 > **User**: "分析一下这个赛艇 FIT 文件。"
 
-Antigravity will enter **AGENTIC mode**, creating a structured task list to:
-1.  **Parse**: Extract data using `parse_fit.py`.
-2.  **Evaluate**: Compare your metrics (DPS, Pace, HR) against `coach_guidelines.md`.
-3.  **Refine**: Generate professional Chinese feedback tailored to your performance.
+Antigravity will automatically:
+1. **Parse FIT file** → Extract data and generate `ANALYSIS_*.json`
+2. **Generate coach review** → Read JSON and apply `coach_guidelines.md` criteria
+3. **Update report** → Replace placeholder with professional Chinese feedback
+4. **Regenerate share image** → Create `*_SHARE.png` with embedded review
+5. **Cleanup** → Delete temporary JSON file
 
-### 2. Task View Visibility
-During the analysis, you will see a real-time task block:
-
-| Task Name | Status |
-| :--- | :--- |
-| **Extracting Rowing Data** | Running `parse_fit.py` on FIT file... |
-| **Generating Coach Feedback** | Updating training report with technical review... |
-
-### 3. Professional Output
-The final result is a polished Markdown report (e.g., `ROW_YYYYMMDD_HHMM.md`) complete with data tables, pacing charts, and a **Coach Review** section.
-
----
+### Output Files
+- `ROW_*.md` or `ERG_*.md` - Complete training report with coach review
+- `*_SHARE.png` - Social media share image
 
 ## Technical CLI Usage (Advanced)
 For developers or offline processing:
@@ -79,40 +72,42 @@ python3 scripts/parse_fit.py "path/to/session.fit"
 python3 scripts/parse_fit.py "session.fit" --max-hr 195 --resting-hr 60
 ```
 
-## Example Analysis (Jan 23rd Session)
+## Example Analysis (Jan 24th Session)
 
 ### Input
-File: `SpdCoach 2763073 20260123 0811AM.fit`
+File: `SpdCoach 2763073 20260124 0133PM.fit`
 
 ### Analysis Results (Full Segments)
 | # | Time | Distance | Pace/500m | SPM | HR | DPS | Note |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| 1 | 10:11 | 1479m | 3:26.4 | 18 | 104 | 8.1m | UT2 |
-| 2 | 4:26 | 693m | 3:11.6 | 17 | 118 | 9.2m | UT2 |
-| 3 | 24:39 | 4331m | 2:50.7 | 16 | 132 | 11.0m | UT2 |
-| 4 | 18:14 | 3280m | 2:46.7 | 17 | 136 | 10.6m | UT2 |
-| 5 | 8:39 | 1330m | 3:14.9 | 16 | 116 | 9.6m | UT2 |
-| 6 | 1:03 | 110m | 4:43.8 | 19 | 101 | 5.6m | Rest |
-| 7 | 5:07 | 913m | 2:48.1 | 17 | 122 | 10.5m | UT2 |
-| 8 | 2:37 | 369m | 3:32.3 | 23 | 107 | 6.1m | UT2 |
-| 9 | 0:55 | 154m | 2:58.2 | 15 | 117 | 11.2m | UT2 |
+| 1 | 13:35 | 2300m | 2:57.2 | 19 | 118 | 8.9m | UT2 |
+| 2 | 21:28 | 4000m | 2:41.0 | 18 | 140 | 10.4m | UT2 |
+| 3 | 21:04 | 4000m | 2:38.0 | 18 | 142 | 10.5m | UT2 |
+| 4 | 2:54 | 500m | 2:54.0 | 19 | 132 | 9.1m | UT2 |
+| 5 | 3:18 | 500m | 3:18.0 | 19 | 124 | 8.0m | UT2 |
+| 6 | 5:11 | 1000m | 2:35.8 | 18 | 135 | 10.7m | UT2 |
 
-### AI Coach Feedback (Full)
-> 🚀 **总体评价**: 本次训练是一次非常高质量的 UT2 技术课。主要特点是在极低频率下保持了极高的输出质量，这对建立扎实的赛艇基础至关重要。
->
-> 💎 **核心亮点**:
-> *   **顶级的划水实效 (DPS)**: 在第3段和第4段（总长约 7.6km）中，你的 DPS 分别达到了 **11.0m** 和 **10.6m**。在 16-17 桨频下能维持如此高的 DPS，说明你的拉桨行程非常完整，且“水感”出色。
-> *   **超低频下的控制力**: 第9段虽然距离较短，但在 **15 桨频** 下做出了 **11.2m** 的 DPS。这种极低频的练习是检验身体连接（Connection）和发力节奏最好的方式。
-> *   **心率区间分配**: 心率主要维持在 130bpm 左右，完美契合 UT2 训练目标，有效增强了有氧耐力基础。
->
-> 💡 **技术建议**:
-> *   **注意分段间的一致性**: 前两个分段（第1和第2段）的 DPS 为 **8.1m - 9.2m**，明显低于后续阶段。建议在训练起始阶段就加强对“挂水”的关注，更快地进入高效状态。
-> *   **尝试微调桨频**: 既然在 16-17 频率下 DPS 已经达到甚至超过 11m，可以尝试在维持同等拉桨力度的情况下，将桨频温和地提升到 **18-19**，看看能否将配速推进到 **2:40** 以内而不损失效率。
->
-> **非常棒的一堂课，这种低频大DPS的训练是通往更高级别选手的必经之路！**
+### Coach Review (AI Generated)
 
-### Visual Analysis (Chart)
-![Pace & Cadence Chart](assets/example_chart.png)
+#### 🎯 训练总结
+本次完成 **12.3km** 水上结构化训练，总用时 **68分钟**。亮点：**2x4km主训练段**，配速分别为 **2:41.0** 和 **2:38.0**，展现出负配速能力。心率从140升至142bpm，控制得当。
+
+#### 💪 亮点
+- **负配速执行出色**：第二个4k比第一个快3秒/500m，技术耐力提升明显
+- **DPS持续提升**：从热身段8.9m → 主训练10.4m → 10.5m → 冲刺段10.7m
+- **最佳500m 2:25.2/500m**，最佳1k **2:31.0/500m**
+
+#### � 改进空间
+- **Segment 5配速回落至3:18**（500m段），DPS降至8.0m，注意保持节奏
+- **热身段偏长**：13分35秒热身可压缩至10分钟
+
+#### 💡 下次训练建议
+> 可尝试"3x3km"结构，目标配速递进(2:45→2:40→2:35)，保持DPS>10m。
+
+### Share Image
+The skill also generates a social media share image with all metrics and coach review embedded:
+
+![Share Image Example](assets/example_share.png)
 
 ## License
 MIT

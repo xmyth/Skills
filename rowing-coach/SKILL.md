@@ -6,47 +6,53 @@ description: Professional rowing coach assistant that analyzes FIT files and gen
 # Rowing Coach
 
 ## Overview
-This skill provides professional analysis of rowing workouts using data from FIT files. It acts as a professional rowing coach to evaluate performance and generates engaging training logs.
+This skill provides **automatic** professional analysis of rowing workouts. When invoked, it parses FIT files, generates a professional coach review, and produces a complete training report.
 
-## Workflow
+## Automatic Workflow
 
-1.  **Extract Data**:
-    Run the `scripts/parse_fit.py` script. It will generate a partial Markdown report and a detailed `ANALYSIS_<timestamp>.json` file.
-    ```bash
-    .gemini/skills/rowing-coach/.venv/bin/python3 .gemini/skills/rowing-coach/scripts/parse_fit.py <path_to_fit_file>
-    ```
+When analyzing a FIT file, execute **ALL** steps automatically without waiting for user input:
 
-2.  **LLM Coaching Analysis (Crucial)**:
-    -   **Read Data**: Read the generated `.json` file from the previous step.
-    -   **Analyze**: ACT AS A PROFESSIONAL ROWING COACH. Use the data and `references/coach_guidelines.md` to evaluate:
-        -   **Technical Efficiency (DPS)**: Evaluate average Distance Per Stroke vs. benchmarks (8-12m).
-        -   **Power Consistency**: Analyze pace consistency across segments.
-        -   **Intensity & Pacing**: Review best efforts (2k, 4k) and segment types.
-    -   **Generate Feedback**: Create professional, actionable, and encouraging insights in Chinese. Avoid generic advice; refer to specific segments and metrics from the data.
+### Step 1: Parse FIT File
+```bash
+.gemini/skills/rowing-coach/.venv/bin/python3 .gemini/skills/rowing-coach/scripts/parse_fit.py <path_to_fit_file>
+```
+**Outputs**:
+- `ANALYSIS_<timestamp>.json` - Structured data for analysis
+- `ROW_<timestamp>.md` or `ERG_<timestamp>.md` - Initial report with placeholder review
+- `*_SHARE.png` - Social media image
 
-3.  **Generate Final Report**:
-    Update the generated report or create a new one following `references/training_log_style.md`.
-    -   **Replace Placeholder**: Replace the "等待 LLM 分析" placeholder with your professional analysis.
-    -   **Content**: Focus on technical and physiological analysis.
+### Step 2: Generate Professional Coach Review
+**IMMEDIATELY** after Step 1:
+1. Read the generated `ANALYSIS_*.json` file
+2. Use `references/coach_guidelines.md` for analysis criteria and coaching style
+3. Generate a professional, data-driven review in Chinese following the structure:
+   - **训练总结**: Distance, time, training type
+   - **亮点**: Specific strengths with data references
+   - **改进空间**: Technical gaps with segment references
+   - **下次训练建议**: Actionable drill or focus
 
-4.  **Save/Update Final Report**:
-    Ensure the final report with your expert analysis is saved in the same directory as the original FIT file.
+### Step 3: Update Report
+Replace the placeholder review in the generated `.md` file with your professional analysis.
 
+### Step 4: Regenerate Share Image
+```bash
+.gemini/skills/rowing-coach/.venv/bin/python3 .gemini/skills/rowing-coach/scripts/parse_fit.py --regen-share <path_to_updated_md>
+```
+This regenerates the `*_SHARE.png` with the new coach review embedded.
+
+### Step 5: Cleanup
+Delete the temporary `ANALYSIS_*.json` file after successful completion.
+
+> **IMPORTANT**: All five steps must be completed automatically in a single invocation.
 
 ## Resources
 
-### Dependencies
-- **fitparse**: Used to parse `.fit` files.
-- **matplotlib**: Used to generate data-driven performance charts.
-- **pandas**: Used for data manipulation and analysis.
-- **geopy** (Local): Optional, used for reverse geocoding coordinates to location names.
-
 ### Scripts
-- `.gemini/skills/rowing-coach/scripts/parse_fit.py`: Extracts session summary and record samples from FIT files. Returns JSON.
+- `.gemini/skills/rowing-coach/scripts/parse_fit.py`: Parses FIT files and generates initial reports.
 
 ### References
-- `.gemini/skills/rowing-coach/references/coach_guidelines.md`: Professional criteria for evaluating rowing technique and data.
-- `.gemini/skills/rowing-coach/references/training_log_style.md`: Template and style guide for the output format.
+- `references/coach_guidelines.md`: Technical evaluation criteria (DPS benchmarks, zones, pacing).
+- `references/training_log_style.md`: Report style guide.
 
 ## Example User Requests
 - "Analyze this rowing session."

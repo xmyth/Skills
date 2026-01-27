@@ -37,8 +37,8 @@ pip install -r requirements.txt
 
 The parser outputs:
 - `ANALYSIS_<timestamp>.json` - Structured data for LLM coach review
-- `ROW_<timestamp>.md` - Initial Markdown report with placeholder for coach analysis
-- `PACE_CADENCE_<timestamp>.png` - Visual pacing chart
+- `ROW_<timestamp>.md` or `ERG_<timestamp>.md` - Initial Markdown report with placeholder for coach analysis
+- `*_SHARE.png` - Social media share image
 
 ### Testing
 There are no automated tests in this repository. Validation is done by:
@@ -95,18 +95,20 @@ The LLM reads `ANALYSIS_*.json` and acts as a professional rowing coach using:
 - Optional geopy integration for location name reverse geocoding
 - No phase detection (just Work/Rest classification)
 
-### Data Flow
+### Data Flow (Automatic)
 ```
 FIT File → parse_fit.py → ANALYSIS_*.json
                         → ROW_*.md (with placeholder)
-                        → PACE_CADENCE_*.png
+                        → *_SHARE.png
 
-ANALYSIS_*.json → [LLM reads] → Professional Chinese analysis → Update ROW_*.md
+[LLM automatically reads JSON] → Generate professional review → Update ROW_*.md
 ```
+
+> **Note**: All steps execute automatically in a single LLM invocation. No user intervention required between steps.
 
 ## Key Files
 
-- `scripts/parse_fit.py` (1271 lines) - Core parsing, segmentation, analysis, visualization
+- `scripts/parse_fit.py` - Core parsing, segmentation, analysis, visualization, share image generation
 - `references/coach_guidelines.md` - Rowing coaching evaluation criteria and benchmarks
 - `references/training_log_style.md` - Markdown report template and Chinese style guide
 - `SKILL.md` - LLM skill definition (workflow instructions for assistant)
