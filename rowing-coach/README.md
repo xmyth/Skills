@@ -51,7 +51,7 @@ Simply drag and drop your `.fit` file into the Antigravity chat and ask for an a
 > **User**: "分析一下这个赛艇 FIT 文件。"
 
 Antigravity will automatically:
-1. **Parse FIT file** → Extract data and generate `ANALYSIS_*.json`
+1. **Parse FIT file** → Extract data and generate `ROW_*.json` or `ERG_*.json`
 2. **Generate coach review** → Read JSON and apply `coach_guidelines.md` criteria
 3. **Update report** → Replace placeholder with professional Chinese feedback
 4. **Regenerate share image** → Create `*_SHARE.png` with embedded review

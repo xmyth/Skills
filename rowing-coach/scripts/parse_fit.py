@@ -899,18 +899,51 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
     data["laps"] = laps
     # -------------------------------
     
-    # Determine output path
-    base_name = os.path.splitext(os.path.basename(input_file_path))[0]
-    timestamp_str = session.get("start_time", "").replace(":", "").replace("-", "").split("T")
-    if len(timestamp_str) >= 2:
-        ts = timestamp_str[0] + "_" + timestamp_str[1][:4]
+    # Determine Prefix (ROW/ERG)
+    prefix = "ERG" # Default
+    if is_indoor:
+        prefix = "ERG"
+    else:
+        # Check for GPS presence to determine ROW vs ERG/Other
+        # We can check session location or fallback to records
+        has_gps = False
+        if session.get("start_position_lat") and session.get("start_position_long"):
+             has_gps = True
+        else:
+             # Check first few records
+             for r in data.get("records", [])[:100]:
+                 if r.get("position_lat"):
+                     has_gps = True
+                     break
+        
+        if has_gps:
+            prefix = "ROW"
+        elif "SpdCoach" in input_file_path:
+            prefix = "ROW" # SpdCoach implies rowing
+
+    # Determine Timestamp (Local Time UTC+8)
+    timestamp_str = session.get("start_time", "")
+    ts = "UNKNOWN"
+    if timestamp_str:
+        try:
+            if isinstance(timestamp_str, datetime.datetime):
+                dt_utc = timestamp_str
+            else:
+                dt_utc = datetime.datetime.fromisoformat(str(timestamp_str))
+            
+            # Convert to Local Time (assuming UTC+8 for consistency with Report)
+            dt_local = dt_utc + datetime.timedelta(hours=8)
+            ts = dt_local.strftime("%Y%m%d_%H%M")
+        except:
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M")
     else:
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M")
     
-    output_dir = os.path.dirname(input_file_path)
+    output_dir = os.path.dirname(os.path.abspath(input_file_path))
     # os.makedirs(output_dir, exist_ok=True) # Directory of input file must exist
     
-    json_path = os.path.join(output_dir, f"ANALYSIS_{ts}.json")
+    # New Filename Pattern: PREFIX_YYYYMMDD_HHMM.json
+    json_path = os.path.join(output_dir, f"{prefix}_{ts}.json")
     
     # Custom encoder for datetime objects
     def json_serializer(obj):
@@ -1961,15 +1994,21 @@ def main():
             sys.exit(1)
         
         # Find matching JSON file
-        json_files = [f for f in os.listdir(md_dir) if f.startswith('ANALYSIS_') and f.endswith('.json')]
+        # Pattern: PREFIX_TIMESTAMP.json
+        timestamp_part = match.group(1) # YYYYMMDD
+        
+        json_files = [f for f in os.listdir(md_dir) if f.endswith('.json')]
         json_path = None
+        
         for jf in json_files:
-            if match.group(1) in jf:
-                json_path = os.path.join(md_dir, jf)
-                break
+            # Check if filename contains the date part (robust enough for unique daily sessions usually)
+            # Or simpler: check if it matches the standard patterns
+            if match.group(0) in jf: # match.group(0) is YYYYMMDD_HHMM
+                 json_path = os.path.join(md_dir, jf)
+                 break
         
         if not json_path or not os.path.exists(json_path):
-            print(f"Error: Cannot find matching JSON file for {md_base}")
+            print(f"Error: Cannot find matching JSON file for {md_base} containing {match.group(0)}")
             sys.exit(1)
         
         # Load JSON

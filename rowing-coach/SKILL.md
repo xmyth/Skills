@@ -17,13 +17,13 @@ When analyzing a FIT file, execute **ALL** steps automatically without waiting f
 .gemini/skills/rowing-coach/.venv/bin/python3 .gemini/skills/rowing-coach/scripts/parse_fit.py <path_to_fit_file>
 ```
 **Outputs**:
-- `ANALYSIS_<timestamp>.json` - Structured data for analysis
+- `ROW_*.json` / `ERG_*.json` - Structured data for analysis
 - `ROW_<timestamp>.md` or `ERG_<timestamp>.md` - Initial report with placeholder review
 - `*_SHARE.png` - Social media image
 
 ### Step 2: Generate Professional Coach Review
 **IMMEDIATELY** after Step 1:
-1. Read the generated `ANALYSIS_*.json` file
+1. Read the generated JSON analysis file (`*.json`)
 2. Use `references/coach_guidelines.md` for analysis criteria and coaching style
 3. Generate a professional, data-driven review in Chinese following the structure:
    - **训练总结**: Distance, time, training type
@@ -41,7 +41,7 @@ Replace the placeholder review in the generated `.md` file with your professiona
 This regenerates the `*_SHARE.png` with the new coach review embedded.
 
 ### Step 5: Cleanup
-Delete the temporary `ANALYSIS_*.json` file after successful completion.
+Delete the temporary JSON analysis file after successful completion.
 
 > **IMPORTANT**: All five steps must be completed automatically in a single invocation.
 
