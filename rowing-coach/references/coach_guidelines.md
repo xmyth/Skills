@@ -54,3 +54,4 @@ When analyzing, follow this flow:
 -   Use bolding for key metrics.
 -   Focus on “水感” (water feel) and “本体感受” (proprioceptive awareness).
 -   Structure: **评价 (Analysis) -> 点评 (Specifics) -> 建议 (Actionables)**
+-   Language: **Chinese (Simplified)**.

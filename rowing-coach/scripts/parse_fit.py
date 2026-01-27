@@ -1493,20 +1493,26 @@ def generate_share_image(data, chart_buffer, review_text, output_dir, file_prefi
              
              w_width = get_text_width(word_with_space, font)
              
+             # Check for CJK characters in the word (rough check)
+             # If it contains CJK, we allow it to split char-by-char to fill the line
+             has_cjk = any("\u4e00" <= c <= "\u9fff" for c in w)
+
              if current_w + w_width <= max_width:
                  current_line += word_with_space
                  current_w += w_width
              else:
-                 # If the single word is wider than the line (and it's not empty), we must split it (e.g. long Chinese sentence)
+                 # If it doesn't fit, we have two choices:
+                 # 1. New Line (Standard for English words)
+                 # 2. Split (Needed for CJK or Super Long English)
+                 
+                 should_split = False
                  if get_text_width(w, font) > max_width:
-                     # Hard split for very long tokens (like CJK sentences without spaces)
-                     # Push current line if valid
-                     if current_line:
-                         lines.append(current_line)
-                         current_line = ""
-                         current_w = 0
+                     should_split = True # Too big for ANY line
+                 elif has_cjk:
+                     should_split = True # CJK can be split to fill gap
                      
-                     # Char-by-char fill
+                 if should_split:
+                     # Granular fill
                      for char in word_with_space:
                          cw = get_text_width(char, font)
                          if current_w + cw <= max_width:
@@ -1517,7 +1523,7 @@ def generate_share_image(data, chart_buffer, review_text, output_dir, file_prefi
                              current_line = char
                              current_w = cw
                  else:
-                     # Normal wrap
+                     # Normal wrap (Start new line with this word)
                      lines.append(current_line)
                      current_line = word_with_space
                      current_w = w_width
@@ -1549,13 +1555,25 @@ def generate_share_image(data, chart_buffer, review_text, output_dir, file_prefi
         elif line.startswith("* ") or line.startswith("- "):
             # Bullet - consistent indentation with clean formatting
             txt = line[2:].replace("**", "")  # Remove bullet markers and bold
-            wrapped = wrap_text("• " + txt, font_body, img_width - 2*padding - 20)  # Slight indent for bullet
+            
+            # Calculate bullet width for hanging indent
+            bullet = "• "
+            bullet_w = get_text_width(bullet, font_body)
+            
+            # First line has bullet
+            wrapped = wrap_text(bullet + txt, font_body, img_width - 2*padding - 20)
+            
             for i, wl in enumerate(wrapped):
-                x_off = 10  # Consistent indent for all lines
-                if i > 0:
-                    wl = "  " + wl.lstrip()  # Indent continuation without extra bullet
-                pad = 8 if i == 0 else 3
-                lines_to_draw.append((wl, font_body, "#333333", x_off, pad))
+                if i == 0:
+                    lines_to_draw.append((wl, font_body, "#333333", 10, 8))
+                else:
+                    # Indent subsequent lines by (10 + bullet_width)
+                    # We need to remove the "• " from calculation? No, wrapped lines[1+] don't have it.
+                    # But wrap_text includes "• " in the first line's calculation.
+                    # The cut point logic handles text flow.
+                    # We just need to offset the drawing x
+                    x_indent = 10 + int(bullet_w)
+                    lines_to_draw.append((wl.lstrip(), font_body, "#333333", x_indent, 3))
                 
         elif line.startswith("> "):
             # Quote - styled with left border effect (indent + italic color)
@@ -1746,7 +1764,7 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, 
                 # FIT uses UTC. Convert to UTC+8 (Beijing Time)
                 dt_local = dt + datetime.timedelta(hours=8)
                 time_str = dt_local.strftime("%Y-%m-%d %H:%M")
-                f.write(f"> 📅  **训练时间**: {time_str}\n\n")
+                f.write(f"> 📅  **Date**: {time_str}\n\n")
             except:
                 pass
 
@@ -1777,10 +1795,10 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, 
                  loc_name = get_location_name(start_lat, start_lon)
             
             if loc_name:
-                f.write(f"> 📍  **训练地点**: {loc_name}\n\n")
+                f.write(f"> 📍  **Location**: {loc_name}\n\n")
 
         # Basic Data Summary (Moved here)
-        f.write("## 📝 基础数据汇总\n\n")
+        f.write("## 📝 Summary\n\n")
         
         # Calculate Averages (Weighted by time for accuracy)
         avg_cad_val = 0
@@ -1814,12 +1832,12 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, 
                  
         avg_pace_str = calculate_split(avg_speed_val)
 
-        f.write(f"**总距离**: {total_dist_km:.2f} km\n")
-        f.write(f"**总时间 (Elapsed)**: {calc_elapsed_time/60:.1f} min\n")
-        f.write(f"**运动时间 (Move)**: {calc_move_time/60:.1f} min\n")
-        f.write(f"**平均配速**: {avg_pace_str} /500m\n")
-        f.write(f"**平均桨频**: {avg_cad_val} spm\n")
-        f.write(f"**平均心率**: {avg_hr_val} bpm\n")
+        f.write(f"*   **Total Distance**: {total_dist_km:.2f} km\n")
+        f.write(f"*   **Total Time (Elapsed)**: {calc_elapsed_time/60:.1f} min\n")
+        f.write(f"*   **Moving Time**: {calc_move_time/60:.1f} min\n")
+        f.write(f"*   **Avg Pace**: {avg_pace_str} /500m\n")
+        f.write(f"*   **Avg Rate**: {avg_cad_val} spm\n")
+        f.write(f"*   **Avg HR**: {avg_hr_val} bpm\n")
         
         f.write("\n---\n")
         
@@ -1875,7 +1893,7 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, 
 
 
         if not is_indoor:
-            f.write("## 🏆 最佳表现 (Best Efforts)\n\n")
+            f.write("## 🏆 Best Efforts\n\n")
             
             best_500 = data.get("analysis", {}).get("best_500m")
             best_1k = data.get("analysis", {}).get("best_1k")
@@ -1883,17 +1901,17 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, 
             best_4k = data.get("analysis", {}).get("best_4k")
             best_10k = data.get("analysis", {}).get("best_10k")
             
-            if best_500: f.write(f"*   **最快 500m**: `{best_500['pace']}` (用时 {best_500['time']})\n")
-            if best_1k: f.write(f"*   **最快 1000m**: `{best_1k['pace']}` (用时 {best_1k['time']})\n")
-            if best_2k: f.write(f"*   **最快 2000m**: `{best_2k['pace']}` (用时 {best_2k['time']})\n")
-            if best_4k: f.write(f"*   **最快 4000m**: `{best_4k['pace']}` (用时 {best_4k['time']})\n")
-            if best_10k: f.write(f"*   **最快 10000m**: `{best_10k['pace']}` (用时 {best_10k['time']})\n")
+            if best_500: f.write(f"*   **Fastest 500m**: `{best_500['pace']}` ({best_500['time']})\n")
+            if best_1k: f.write(f"*   **Fastest 1000m**: `{best_1k['pace']}` ({best_1k['time']})\n")
+            if best_2k: f.write(f"*   **Fastest 2000m**: `{best_2k['pace']}` ({best_2k['time']})\n")
+            if best_4k: f.write(f"*   **Fastest 4000m**: `{best_4k['pace']}` ({best_4k['time']})\n")
+            if best_10k: f.write(f"*   **Fastest 10000m**: `{best_10k['pace']}` ({best_10k['time']})\n")
                 
             if not any([best_500, best_1k, best_2k, best_4k, best_10k]):
-                f.write("数据不足，无法计算最佳分段。\n")
+                f.write("Insufficient data for best efforts.\n")
                 
             f.write("\n---\n")
-        f.write("## 👨‍🏫 教练点评 (Coach Review)\n\n")
+        f.write("## 👨‍🏫 Coach Review\n\n")
         
         # Expert System Review
         if forced_review:
@@ -1975,9 +1993,11 @@ def main():
                 custom_header = parts[0].replace('#', '').strip()
             
         
-        review_start = md_content.find("## 👨‍🏫 教练点评")
+        review_start = md_content.find("## 👨‍🏫 Coach Review")
         if review_start == -1:
             review_start = md_content.find("## Coach Review")
+            if review_start == -1:
+                review_start = md_content.find("## 👨‍🏫 教练点评")
         
         review_text = ""
         if review_start != -1:
@@ -2050,7 +2070,7 @@ def main():
              f_prefix = os.path.splitext(md_name)[0]
              share_path = generate_share_image(analyzed_data, chart_buffer, review_text, os.path.dirname(post_path), f_prefix, custom_title=image_title)
 
-        print(f"\n✅ 报告生成完成！")
+        print(f"\n✅ Training analysis complete!")
         print(f"📝 Markdown: {post_path}")
         if share_path:
             print(f"🖼️ Share Image: {share_path}")
