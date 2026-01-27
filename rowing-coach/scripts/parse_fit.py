@@ -1141,7 +1141,7 @@ def generate_pacing_chart(data, output_dir, file_prefix):
     
     return buf
 
-def generate_share_image(data, chart_buffer, review_text, output_dir, file_prefix):
+def generate_share_image(data, chart_buffer, review_text, output_dir, file_prefix, custom_title=None):
     """
     Generate a social-media ready 'long screenshot' image.
     Vertical layout: Header -> Metrics Grid -> Chart -> Segments -> Coach Review
@@ -1236,8 +1236,11 @@ def generate_share_image(data, chart_buffer, review_text, output_dir, file_prefi
             has_gps = True
             break
             
-    sport_label = "On-Water Rowing" if has_gps else "Indoor Rowing"
-    title = f"🚣‍♀️ {sport_label}"
+    if custom_title:
+        title = custom_title
+    else:
+        sport_label = "On-Water Rowing" if has_gps else "Indoor Rowing"
+        title = f"🚣‍♀️ {sport_label}"
     # Date
     date_str = "Unknown Date"
     ts = session.get("start_time")
@@ -1724,8 +1727,17 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, 
     # --------------------------------------
 
     
+    # TITLE GENERATION
+    if is_indoor:
+        type_name = "Indoor Rowing"
+    else:
+        type_name = "On-Water Rowing"
+
+    title_main = f"🚣‍♀️ {type_name} | {total_dist_km:.1f}km Full Analysis 🌊"
+    image_title = f"🚣‍♀️ {type_name}"
+
     with open(output_path, "w", encoding="utf-8") as f:
-        f.write(f"# 🚣‍♀️ 水上技术课 | {total_dist_km:.1f}km 完整复盘 (数据全公开) 🌊\n\n")
+        f.write(f"# {title_main}\n\n")
         
         # Add Training Time Info
         if session.get("start_time"):
@@ -1900,7 +1912,7 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, 
         f.write("\n---\n")
 
         
-    return output_path, chart_buffer, final_review
+    return output_path, chart_buffer, final_review, image_title
 
 def main():
     parser = argparse.ArgumentParser(description="Parse FIT file for Rowing Coach analysis.")
@@ -1949,6 +1961,19 @@ def main():
         # Extract review text from markdown
         with open(md_path, 'r', encoding='utf-8') as f:
             md_content = f.read()
+
+        # Extract Title from Markdown (first line: # 🚣‍♀️ Title | ...)
+        custom_header = None
+        # Look for first line starting with #
+        first_line_end = md_content.find('\n')
+        if first_line_end != -1:
+            first_line = md_content[:first_line_end]
+            # Simple split by |
+            if '|' in first_line:
+                parts = first_line.split('|')
+                # Take part before | and remove #
+                custom_header = parts[0].replace('#', '').strip()
+            
         
         review_start = md_content.find("## 👨‍🏫 教练点评")
         if review_start == -1:
@@ -1995,7 +2020,7 @@ def main():
         
         # Generate share image
         if chart_buffer:
-            share_path = generate_share_image(analyzed_data, chart_buffer, review_text, md_dir, f_prefix)
+            share_path = generate_share_image(analyzed_data, chart_buffer, review_text, md_dir, f_prefix, custom_title=custom_header)
             print(f"✅ Share image regenerated: {share_path}")
         else:
             print("⚠️ Could not generate chart (missing processed_records in JSON)")
@@ -2016,14 +2041,14 @@ def main():
         print(f"✅ Analysis JSON generated: {json_path}")
 
         # Generate Report
-        post_path, chart_buffer, review_text = generate_training_report(analyzed_data, args.file_path, args.max_hr, args.resting_hr)
+        post_path, chart_buffer, review_text, image_title = generate_training_report(analyzed_data, args.file_path, args.max_hr, args.resting_hr)
         
         # Generate Share Image
         share_path = None
         if post_path and chart_buffer:
              md_name = os.path.basename(post_path)
              f_prefix = os.path.splitext(md_name)[0]
-             share_path = generate_share_image(analyzed_data, chart_buffer, review_text, os.path.dirname(post_path), f_prefix)
+             share_path = generate_share_image(analyzed_data, chart_buffer, review_text, os.path.dirname(post_path), f_prefix, custom_title=image_title)
 
         print(f"\n✅ 报告生成完成！")
         print(f"📝 Markdown: {post_path}")
