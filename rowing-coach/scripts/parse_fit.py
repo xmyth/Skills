@@ -993,6 +993,7 @@ def generate_pacing_chart(data, output_dir, file_prefix):
         # Prefer smoothed values if available
         speed = r.get("speed_smooth", r.get("speed"))
         cad = r.get("cadence_smooth", r.get("cadence"))
+        hr = r.get("heart_rate")
         
         if not dt or dist is None: continue
             
@@ -1010,7 +1011,8 @@ def generate_pacing_chart(data, output_dir, file_prefix):
             "elapsed": (dt - start_time).total_seconds(),
             "distance": dist,
             "pace_sec": pace_sec,
-            "cadence": cad if cad and cad > 0 else None
+            "cadence": cad if cad and cad > 0 else None,
+            "heart_rate": hr if hr and hr > 0 else None
         })
         
     df = pd.DataFrame(df_data)
@@ -1020,6 +1022,7 @@ def generate_pacing_chart(data, output_dir, file_prefix):
     # We can plot directly.
     df["pace_smooth"] = df["pace_sec"]
     df["cad_smooth"] = df["cadence"]
+    df["hr_smooth"] = df["heart_rate"]
 
     # Create Plot
     fig, ax1 = plt.subplots(figsize=(12, 7), dpi=150)
@@ -1058,9 +1061,7 @@ def generate_pacing_chart(data, output_dir, file_prefix):
         avg_pace = calculate_split(avg_speed_sess)
         avg_cad = int(avg_cad_sess) if not np.isnan(avg_cad_sess) else 0
     
-    plt.subplots_adjust(top=0.95, bottom=0.15) # Reduce top margin since no summary
-    
-
+    plt.subplots_adjust(top=0.95, bottom=0.15, right=0.85) # Increase right margin for 3rd axis
     
     # Plot Split (Pace) on Left Y-axis
     color = '#1f77b4' # Blue
@@ -1095,9 +1096,19 @@ def generate_pacing_chart(data, output_dir, file_prefix):
     ax2.tick_params(axis='y', labelcolor=color2)
     ax2.grid(False) # Turn off grid for second axis to avoid clutter
     
+    # Plot Heart Rate on 3rd Y-axis (Right, Offset)
+    if df["hr_smooth"].max() > 0:
+        ax3 = ax1.twinx()
+        color3 = '#d62728' # Red
+        ax3.spines["right"].set_position(("axes", 1.08)) # Offset by 8% of width
+        ax3.set_ylabel('Heart Rate (bpm)', color=color3)
+        ax3.plot(df["distance"], df["hr_smooth"], color=color3, linewidth=1.5, alpha=0.7, label="Heart Rate")
+        ax3.tick_params(axis='y', labelcolor=color3)
+        ax3.grid(False)
+    
     plt.title("", pad=0) # Clear default title loc
     
-    fig.tight_layout()  
+    # fig.tight_layout() # tight_layout often breaks with offset spines, handled by subplots_adjust  
     
     # Check if indoor
     is_indoor = False
