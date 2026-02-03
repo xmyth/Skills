@@ -773,6 +773,27 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
     
     avg_dps = sum(dps_values)/len(dps_values) if dps_values else 0
     avg_pace = sum(pace_values)/len(pace_values) if pace_values else 0
+    # Calculate Avg HR (Weighted by active time)
+    hr_prod_sum = 0
+    active_time_sum = 0
+    for l in laps:
+        # Check if active
+        is_rest = False
+        # Use our updated 'type' if available, otherwise heuristics
+        if l.get("type") == "Rest": is_rest = True
+        
+        # Simple heuristic fallback if type not set yet (though it should be)
+        if not is_rest:
+             dur = l.get("total_timer_time", 0)
+             hr = l.get("avg_heart_rate", 0)
+             if hr > 0 and dur > 0:
+                 hr_prod_sum += hr * dur
+                 active_time_sum += dur
+
+    avg_hr_weighted = hr_prod_sum / active_time_sum if active_time_sum > 0 else 0
+
+    avg_dps = sum(dps_values)/len(dps_values) if dps_values else 0
+    avg_pace = sum(pace_values)/len(pace_values) if pace_values else 0
     avg_cadence = sum(cadence_values)/len(cadence_values) if cadence_values else 0
     
     # Prepare analysis summary
@@ -786,7 +807,9 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
         "aggregated_metrics": {
             "avg_dps": round(avg_dps, 1),
             "avg_pace_per_500m": round(avg_pace, 1),
+            "avg_pace_per_500m": round(avg_pace, 1),
             "avg_cadence": round(avg_cadence, 1),
+            "avg_heart_rate": int(avg_hr_weighted),
             "num_segments": len(laps),
             "num_long_steady": len([l for l in laps if l.get("total_distance", 0) > 1500])
         },
@@ -840,6 +863,8 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
             # 0=active, 1=rest, 2=warmup, 3=cooldown, 4=recovery (FIT SDK standard)
             elif isinstance(intensity, int):
                 is_rest = intensity != 0  # Anything other than 0 (active) is considered rest
+            if is_rest and int(lap.get("avg_power", 0) or 0) > 0:
+                is_rest = False
         else:
             # Method 2: Speed heuristic fallback (if intensity field is missing)
             avg_speed = float(lap.get("avg_speed", 0) or 0)
@@ -1069,7 +1094,7 @@ def generate_pacing_chart(data, output_dir, file_prefix):
         avg_cad = int(avg_cad_sess) if not np.isnan(avg_cad_sess) else 0
         avg_hr = int(avg_hr_sess) if avg_hr_sess and not np.isnan(avg_hr_sess) else 0
     
-    plt.subplots_adjust(top=0.88, bottom=0.15, right=0.85) # Increase top margin for Title
+    plt.subplots_adjust(top=0.98, bottom=0.15, right=0.85) # Reduced top margin as title is external
     
     # Plot Split (Pace) on Left Y-axis
     color = '#1f77b4' # Blue
@@ -1374,18 +1399,32 @@ def generate_share_image(data, chart_buffer, review_text, output_dir, file_prefi
         
         # Only add to Move Time if NOT Rest
         # Note: "Work" or None are considered active for safety
-        if l.get("type", "Work") != "Rest":
-             total_time += t_val
+        is_work = l.get("type", "Work") != "Rest"
         
-        if c_val > 0:
+        if is_work:
+             total_time += t_val
+             # Use a new variable for work distance calculation if needed for pace, 
+             # but to keep it simple and consistent with markdown, let's track work distance separately if we want to show IT, 
+             # or just use it for pace. 
+             # Markdown uses work_dist for pace.
+             
+        if c_val > 0 and is_work:
             cad_sum += (c_val * t_val) # Time-weighted cadence
-        if h_val > 0:
+        if h_val > 0 and is_work:
             hr_sum += (h_val * t_val)
     
-    dist_km = total_dist / 1000
+    # Calculate Work Distance for Pace
+    work_dist = sum([l.get("total_distance", 0) for l in laps if l.get("type", "Work") != "Rest"])
+
+    # Update displayed distance to Work Distance to be consistent with metrics? 
+    # User complained about Pace. Pace = Work Dist / Work Time.
+    # If we show Total Dist but use Work Dist for Pace, it might be confusing. 
+    # Given the previous request "work distance is not precisely correct", I should show Work Distance here too.
+    dist_km = work_dist / 1000 
+    
     time_min = total_time / 60
     
-    avg_spd = total_dist / total_time if total_time > 0 else 0
+    avg_spd = work_dist / total_time if total_time > 0 else 0
     avg_pace = calculate_split(avg_spd)
     
     avg_rate = 0
@@ -1399,7 +1438,7 @@ def generate_share_image(data, chart_buffer, review_text, output_dir, file_prefi
     elapsed_min = total_elapsed / 60
 
     metrics = [
-        ("Total Dist (km)", f"{dist_km:.2f}"),
+        ("Work Dist (km)", f"{dist_km:.2f}"),
         ("Elapsed Time (min)", f"{elapsed_min:.1f}"),
         ("Move Time (min)", f"{time_min:.1f}"),
         ("Avg Pace /500m", f"{avg_pace}"),
@@ -1452,7 +1491,7 @@ def generate_share_image(data, chart_buffer, review_text, output_dir, file_prefi
     headers = ["#", "Time", "Dist", "Pace", "SPM", "HR", "DPS", "Type"]
     # Adjust for 1080 width (padding 40 each side = 1000px usable)
     #               #   Time  Dist  Pace  SPM  HR   DPS  Type
-    col_widths = [80, 160, 140, 160, 100, 100, 120, 140]
+    col_widths = [90, 180, 160, 180, 110, 110, 140, 150]
     curr_x = padding
     header_y = 80
     
@@ -1474,8 +1513,7 @@ def generate_share_image(data, chart_buffer, review_text, output_dir, file_prefi
              h = int(dur_s // 3600)
              m = int((dur_s % 3600) // 60)
              dur_str = f"{h}:{m:02}:{s:02}"
-             
-        dist_str = f"{int(lap.get('total_distance', 0))}m"
+        dist_str = f"{int(round(lap.get('total_distance', 0)))}m"
         pace = str(lap.get("avg_500m_split", "-"))
         spm = str(int(lap.get("avg_cadence", 0)))
         
@@ -1884,6 +1922,7 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, 
         
         calc_elapsed_time = 0
         calc_move_time = 0
+        calc_work_dist = 0
         avg_cad_val = 0
         avg_hr_val = 0
         avg_speed_val = 0
@@ -1896,20 +1935,20 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, 
                 calc_elapsed_time += e
                 if l.get("type", "Work") != "Rest":
                     calc_move_time += t
-                    
-                cad_prod_sum += l.get("avg_cadence", 0) * t
-                hr_prod_sum += l.get("avg_heart_rate", 0) * t
+                    calc_work_dist += l.get("total_distance", 0)
+                    cad_prod_sum += l.get("avg_cadence", 0) * t
+                    hr_prod_sum += l.get("avg_heart_rate", 0) * t
             
             if calc_move_time > 0:
                 avg_cad_val = int(cad_prod_sum / calc_move_time)
                 avg_hr_val = int(hr_prod_sum / calc_move_time)
-                avg_speed_val = calc_total_dist / calc_move_time
+                avg_speed_val = calc_work_dist / calc_move_time
             else:
                  avg_speed_val = 0
                  
         avg_pace_str = calculate_split(avg_speed_val)
 
-        f.write(f"*   **Total Distance**: {total_dist_km:.2f} km\n")
+        f.write(f"*   **Work Distance**: {calc_work_dist/1000:.2f} km\n")
         f.write(f"*   **Total Time (Elapsed)**: {calc_elapsed_time/60:.1f} min\n")
         f.write(f"*   **Moving Time**: {calc_move_time/60:.1f} min\n")
         f.write(f"*   **Avg Pace**: {avg_pace_str} /500m\n")
@@ -1943,6 +1982,10 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, 
                 dur_str = f"{h}:{m:02}:{s:02}"
             
             dist = lap.get("total_distance", 0)
+            
+            # Round distance to nearest integer to avoid 499m -> 499 (truncation) issue
+            dist_str = f"{int(round(dist))}m"
+            
             pace = lap.get("avg_500m_split", "-")
             cad = lap.get("avg_cadence", 0) or 0
             hr = lap.get("avg_heart_rate", 0) or 0
@@ -1964,7 +2007,8 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, 
                 note = classify_training_zone(hr, cad, max_hr_val, resting_hr_val)
             
             # No special formatting - plain table row
-            row_str = f"| {num} | {dur_str} | {int(dist)}m | {pace} | {cad} | {hr_str} | {dps_str} | {note} |"
+            # Round distance to nearest integer to avoid 499m -> 499 (truncation) issue
+            row_str = f"| {num} | {dur_str} | {int(round(dist))}m | {pace} | {cad} | {hr_str} | {dps_str} | {note} |"
             f.write(row_str + "\n")
             
         f.write("\n---\n")
@@ -2129,8 +2173,12 @@ def main():
             chart_filename = f"{f_prefix}.png"
             chart_path = os.path.join(md_dir, chart_filename)
             try:
+                # Use combined generated image
+                combo_buffer = generate_combined_chart_image(analyzed_data, chart_buffer)
+                save_buf = combo_buffer if combo_buffer else chart_buffer
+                
                 with open(chart_path, "wb") as f:
-                    f.write(chart_buffer.getbuffer())
+                    f.write(save_buf.getbuffer())
                 print(f"✅ Chart image saved: {chart_path}")
                 chart_buffer.seek(0) # Reset buffer for share image generation
             except Exception as e:
@@ -2170,8 +2218,12 @@ def main():
              chart_filename = f"{f_prefix}.png"
              chart_path = os.path.join(md_dir, chart_filename)
              try:
+                # Use combined generated image
+                combo_buffer = generate_combined_chart_image(analyzed_data, chart_buffer)
+                save_buf = combo_buffer if combo_buffer else chart_buffer
+                
                 with open(chart_path, "wb") as f:
-                    f.write(chart_buffer.getbuffer())
+                    f.write(save_buf.getbuffer())
                 print(f"✅ Chart image saved: {chart_path}")
                 chart_buffer.seek(0) # Reset buffer
              except Exception as e:
@@ -2191,6 +2243,232 @@ def main():
 
     else:
         sys.exit(1)
+
+def generate_combined_chart_image(data, chart_buf):
+    """
+    Combines the pacing chart (from buffer) with a segments table.
+    Styled similar to the share image segments table.
+    Returns a bytes buffer of the PNG image.
+    """
+    from PIL import Image, ImageDraw, ImageFont
+    from pilmoji import Pilmoji
+    
+    # 1. Load Chart
+    chart_buf.seek(0)
+    try:
+        chart_img = Image.open(chart_buf)
+    except Exception as e:
+        print(f"Error loading chart for combo: {e}")
+        return None
+
+    laps = data.get("laps", [])
+    if not laps:
+        return chart_buf # Return original if no laps
+
+    # 2. Config
+    img_width = 1200
+    bg_color = "#FFFFFF"
+    text_color = "#333333"
+    padding = 40
+    
+    # Fonts (Duplicated for standalone safety)
+    font_candidates = [
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/Library/Fonts/Arial Unicode.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"
+    ]
+    font_path = None
+    for fp in font_candidates:
+        if os.path.exists(fp):
+            font_path = fp
+            break
+    if not font_path: font_path = "/System/Library/Fonts/Supplemental/Arial.ttf"
+    
+    try:
+        font_header = ImageFont.truetype(font_path, 36)
+        font_body = ImageFont.truetype(font_path, 28)
+        font_small = ImageFont.truetype(font_path, 24)
+        font_subtitle = ImageFont.truetype(font_path, 20) # Even smaller
+    except:
+        font_header = ImageFont.load_default()
+        font_body = ImageFont.load_default()
+        font_small = ImageFont.load_default()
+        font_subtitle = ImageFont.load_default()
+
+    # 3. Resize Chart to match width
+    target_w = img_width - 2 * padding
+    ratio = target_w / chart_img.width
+    target_h = int(chart_img.height * ratio)
+    chart_resized = chart_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
+    
+    # 4. Generate Title Block (Pacing Chart + Metrics)
+    # Calculate Metrics from Laps
+    total_dist = 0
+    total_time = 0 # Moving time
+    cad_sum = 0
+    hr_sum = 0
+    
+    for l in laps:
+        d_val = float(l.get("total_distance", 0))
+        t_val = float(l.get("total_timer_time", 0))
+        c_val = float(l.get("avg_cadence", 0))
+        h_val = float(l.get("avg_heart_rate", 0) or 0)
+        
+        total_dist += d_val
+        
+        # Only add to Move Time if NOT Rest (Consistent with share image metrics)
+        is_work = l.get("type", "Work") != "Rest"
+        
+        if is_work:
+             total_time += t_val
+        
+        if c_val > 0 and is_work:
+            cad_sum += (c_val * t_val)
+        if h_val > 0 and is_work:
+            hr_sum += (h_val * t_val)
+    
+    # Calculate Work Distance for Pace
+    work_dist = sum([l.get("total_distance", 0) for l in laps if l.get("type", "Work") != "Rest"])
+
+    dist_km = work_dist / 1000
+    time_min = total_time / 60
+    avg_spd = work_dist / total_time if total_time > 0 else 0
+    avg_pace = calculate_split(avg_spd)
+    
+    avg_rate = int(cad_sum / total_time) if total_time > 0 else 0
+    avg_hr = int(hr_sum / total_time) if total_time > 0 else 0
+
+    # Format Subtitle
+    # "ROW | 2026-02-03 | 11.20km | 60.0min | 2:05 | 18spm | 137bpm"
+    subtitle_parts = []
+    
+    session = data.get("session", {})
+
+    # Sport Type (ROW / ERG)
+    s_type = "ROW"
+    if session.get("sub_sport") == "indoor_rowing":
+        s_type = "ERG"
+    subtitle_parts.append(s_type)
+    
+    # Date (Date only)
+    session = data.get("session", {})
+    ts = session.get("start_time")
+    if ts:
+        try:
+           dt = datetime.datetime.fromisoformat(str(ts)) + datetime.timedelta(hours=8)
+           date_str = dt.strftime("%Y-%m-%d")
+           subtitle_parts.append(date_str)
+        except: pass
+
+    subtitle_parts.append(f"{dist_km:.2f}km")
+    subtitle_parts.append(f"{time_min:.1f}min")
+    subtitle_parts.append(f"{avg_pace}/500m")
+    subtitle_parts.append(f"{avg_rate}spm")
+    if avg_hr > 0:
+        subtitle_parts.append(f"{avg_hr}bpm")
+        
+    subtitle_str = "  •  ".join(subtitle_parts)
+
+    title_height = 125 # Increased for more spacing
+    blk_title = Image.new("RGB", (img_width, title_height), bg_color)
+    
+    # Calculate text width for centering
+    sub_w = 0
+    if hasattr(font_subtitle, 'getlength'):
+        sub_w = font_subtitle.getlength(subtitle_str)
+    else:
+        sub_w = font_subtitle.getsize(subtitle_str)[0]
+    
+    sub_x = (img_width - sub_w) / 2
+    
+    with Pilmoji(blk_title) as pilmoji:
+          pilmoji.text((padding, 20), "📈 Pacing Chart", font=font_header, fill=text_color)
+          pilmoji.text((sub_x, 85), subtitle_str, font=font_subtitle, fill="#666666")
+
+    # 5. Generate Table Image
+    table_height = 80 + len(laps) * 50
+    blk_table = Image.new("RGB", (img_width, table_height + 50), bg_color)
+    d = ImageDraw.Draw(blk_table)
+    
+    # Title (Segments)
+    with Pilmoji(blk_table) as pilmoji:
+        pilmoji.text((padding, 10), "📊 Segments", font=font_header, fill=text_color)
+    
+    # Headers
+    headers = ["#", "Time", "Dist", "Pace", "SPM", "HR", "DPS", "Type"]
+    col_widths =     [90, 180, 160, 180, 110, 110, 140, 150]
+    
+    curr_x = padding
+    header_y = 70
+    
+    for i, h in enumerate(headers):
+        d.text((curr_x, header_y), h, font=font_small, fill="#888888")
+        curr_x += col_widths[i]
+        
+    y = header_y + 50
+    
+    # Rows
+    for i, lap in enumerate(laps):
+        num = str(lap.get("lap_number", i+1))
+        dur_s = lap.get("total_timer_time", 0)
+        m = int(dur_s // 60)
+        s = int(dur_s % 60)
+        dur_str = f"{m}:{s:02}"
+        if dur_s >= 3600:
+             h = int(dur_s // 3600)
+             m = int((dur_s % 3600) // 60)
+             dur_str = f"{h}:{m:02}:{s:02}"
+        
+        dist_str = f"{int(round(lap.get('total_distance', 0)))}m"
+        pace = str(lap.get("avg_500m_split", "-"))
+        spm = str(int(lap.get("avg_cadence", 0)))
+        
+        avg_spd = lap.get("avg_speed", 0)
+        cad = lap.get("avg_cadence", 0)
+        dps = avg_spd / (cad/60) if cad > 0 else 0
+        dps_str = f"{dps:.1f}" if dps > 0 else "-"
+        
+        l_type = "Work"
+        if lap.get("type") == "Rest": l_type = "Rest"
+        else:
+             hr_val = lap.get("avg_heart_rate", 0) or 0
+             cad_val = int(lap.get("avg_cadence", 0))
+             l_type = classify_training_zone(hr_val, cad_val, MAX_HR, RESTING_HR)
+             if not l_type: l_type = "Work"
+
+        hr_str = str(int(lap.get("avg_heart_rate", 0) or 0))
+        
+        row_vals = [num, dur_str, dist_str, pace, spm, hr_str, dps_str, l_type]
+        
+        curr_x = padding
+        if i % 2 == 1:
+            d.rectangle([(padding, y-10), (img_width-padding, y+35)], fill="#F8F9FA")
+            
+        for j, val in enumerate(row_vals):
+            d.text((curr_x, y), val, font=font_body, fill=text_color)
+            curr_x += col_widths[j]
+            
+        y += 50
+
+    # 6. Composite
+    # Top: Chart Title (80)
+    # Mid: Chart (target_h)
+    # Bot: Table (blk_table.height)
+    final_h = title_height + target_h + 10 + blk_table.height
+    final_img = Image.new("RGB", (img_width, final_h), bg_color)
+    
+    final_img.paste(blk_title, (0, 0))
+    final_img.paste(chart_resized, (padding, title_height))
+    final_img.paste(blk_table, (0, title_height + target_h + 10))
+    
+    # Return buffer
+    out_buf = io.BytesIO()
+    final_img.save(out_buf, format='PNG')
+    out_buf.seek(0)
+    return out_buf
 
 if __name__ == "__main__":
     main()
