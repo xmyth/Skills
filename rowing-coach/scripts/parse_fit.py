@@ -1042,26 +1042,34 @@ def generate_pacing_chart(data, output_dir, file_prefix):
         
         # Calculate Weighted Averages
         cad_sum = 0
+        hr_sum = 0
         for l in laps:
-            cad_sum += float(l.get("avg_cadence", 0)) * float(l.get("total_timer_time", 0))
+            t = float(l.get("total_timer_time", 0))
+            cad_sum += float(l.get("avg_cadence", 0)) * t
+            hr_sum += float(l.get("avg_heart_rate", 0) or 0) * t
             
         avg_cad_val = cad_sum / calc_total_time if calc_total_time > 0 else 0
+        avg_hr_val = hr_sum / calc_total_time if calc_total_time > 0 else 0
         avg_speed_val = calc_total_dist / calc_total_time if calc_total_time > 0 else 0
         
         total_dist = calc_total_dist / 1000
         total_time = calc_total_time / 60
         avg_pace = calculate_split(avg_speed_val)
         avg_cad = int(avg_cad_val)
+        avg_hr = int(avg_hr_val)
     else:
         # Fallback to session or DF
         total_dist = session.get("total_distance", 0) / 1000
         total_time = session.get("total_timer_time", 0) / 60
         avg_speed_sess = session.get("avg_speed", 0)
         avg_cad_sess = session.get("avg_cadence", 0)
+        avg_hr_sess = session.get("avg_heart_rate", 0)
+        
         avg_pace = calculate_split(avg_speed_sess)
         avg_cad = int(avg_cad_sess) if not np.isnan(avg_cad_sess) else 0
+        avg_hr = int(avg_hr_sess) if avg_hr_sess and not np.isnan(avg_hr_sess) else 0
     
-    plt.subplots_adjust(top=0.95, bottom=0.15, right=0.85) # Increase right margin for 3rd axis
+    plt.subplots_adjust(top=0.88, bottom=0.15, right=0.85) # Increase top margin for Title
     
     # Plot Split (Pace) on Left Y-axis
     color = '#1f77b4' # Blue
@@ -1084,8 +1092,6 @@ def generate_pacing_chart(data, output_dir, file_prefix):
     ax1.yaxis.set_major_formatter(ticker.FuncFormatter(time_ticks))
     ax1.tick_params(axis='y', labelcolor=color)
     
-    # Set realistic limits (e.g. 1:30 to 4:00)
-    # ax1.set_ylim(bottom=100, top=240) # 1:40 to 4:00
     ax1.invert_yaxis() # Faster pace (lower time) on top
     
     # Plot Cadence on Right Y-axis
@@ -1106,7 +1112,34 @@ def generate_pacing_chart(data, output_dir, file_prefix):
         ax3.tick_params(axis='y', labelcolor=color3)
         ax3.grid(False)
     
-    plt.title("", pad=0) # Clear default title loc
+    # Create Title with Metrics
+    # Date formatting
+    date_str = ""
+    start_ts = session.get("start_time")
+    if start_ts:
+        try:
+            if isinstance(start_ts, str):
+                dt_obj = datetime.datetime.fromisoformat(start_ts)
+            else:
+                dt_obj = start_ts
+            # Localize UTC+8
+            dt_local = dt_obj + datetime.timedelta(hours=8)
+            date_str = dt_local.strftime("%Y-%m-%d %H:%M")
+        except:
+            pass
+
+    # Format Title
+    title_parts = []
+    if date_str: title_parts.append(date_str)
+    if total_dist > 0: title_parts.append(f"{total_dist:.2f} km")
+    if total_time > 0: title_parts.append(f"{total_time:.1f} min")
+    title_parts.append(f"{avg_pace} /500m")
+    title_parts.append(f"{avg_cad} spm")
+    if avg_hr > 0: title_parts.append(f"{avg_hr} bpm")
+    
+    title_str = " | ".join(title_parts)
+    
+    plt.title(title_str, pad=20, fontsize=18, fontweight='bold', color='#333333')
     
     # fig.tight_layout() # tight_layout often breaks with offset spines, handled by subplots_adjust  
     
@@ -2088,6 +2121,18 @@ def main():
         f_prefix = os.path.splitext(md_base)[0]
         chart_buffer = generate_pacing_chart(analyzed_data, md_dir, f_prefix)
         
+        # Save Chart Image Separately
+        if chart_buffer:
+            chart_filename = f"{f_prefix}.png"
+            chart_path = os.path.join(md_dir, chart_filename)
+            try:
+                with open(chart_path, "wb") as f:
+                    f.write(chart_buffer.getbuffer())
+                print(f"✅ Chart image saved: {chart_path}")
+                chart_buffer.seek(0) # Reset buffer for share image generation
+            except Exception as e:
+                print(f"⚠️ Could not save separate chart image: {e}")
+
         # Generate share image
         if chart_buffer:
             share_path = generate_share_image(analyzed_data, chart_buffer, review_text, md_dir, f_prefix, custom_title=custom_header)
@@ -2113,6 +2158,22 @@ def main():
         # Generate Report
         post_path, chart_buffer, review_text, image_title = generate_training_report(analyzed_data, args.file_path, args.max_hr, args.resting_hr)
         
+        # Convert chart_buffer to separate image file if available
+        if post_path and chart_buffer:
+             md_dir = os.path.dirname(post_path)
+             md_name = os.path.basename(post_path)
+             f_prefix = os.path.splitext(md_name)[0]
+             
+             chart_filename = f"{f_prefix}.png"
+             chart_path = os.path.join(md_dir, chart_filename)
+             try:
+                with open(chart_path, "wb") as f:
+                    f.write(chart_buffer.getbuffer())
+                print(f"✅ Chart image saved: {chart_path}")
+                chart_buffer.seek(0) # Reset buffer
+             except Exception as e:
+                print(f"⚠️ Could not save separate chart image: {e}")
+
         # Generate Share Image
         share_path = None
         if post_path and chart_buffer:
