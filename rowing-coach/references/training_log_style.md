@@ -15,12 +15,12 @@
 ### 2. Key Metrics (The "Grid")
 - Display metrics clearly, often with bullet points.
 - Icons for metrics:
-  - ⏱️ Duration (时间)
-  - 📏 Distance (距离)
-  - ⚡ Avg Split (500m配速)
-  - 🚣 Stroke Rate (桨频 s/m)
-  - ❤️ Heart Rate (心率)
-  - 🔥 Calories (卡路里)
+  - Duration
+  - Distance
+  - Avg Split (500m Pace)
+  - Stroke Rate (spm)
+  - Heart Rate (bpm)
+  - Calories
 
 ### 3. Coach's Professional Review (Core Analysis)
 - **Technical Analysis**: Comment on stroke rate consistency, pacing strategy, and efficiency (Distance Per Stroke).

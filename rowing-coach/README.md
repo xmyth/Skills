@@ -10,7 +10,7 @@ Professional rowing coach assistant that analyzes FIT files and generates detail
     - **DPS (Distance Per Stroke)**: Evaluates technical efficiency against professional benchmarks.
     - **Pacing Strategy**: Identifies patterns like "Negative Splits" and power consistency.
     - **Zone Classification**: Automatically classifies training intensity (UT2, UT1, AT, TR, AN) based on Heart Rate Reserve (HRR) and stroke rate.
-- **Coach Review**: Generates professional, actionable insights and technical recommendations in Chinese.
+- **Coach Review**: Generates professional, actionable insights and technical recommendations in English.
 - **Visualization**: Automatically generates Pace & Cadence charts for visual review.
 
 ## Project Structure
@@ -48,12 +48,12 @@ This skill is designed to work seamlessly with the **Antigravity** agentic assis
 ### Automatic 5-Step Workflow
 Simply drag and drop your `.fit` file into the Antigravity chat and ask for an analysis:
 
-> **User**: "分析一下这个赛艇 FIT 文件。"
+> **User**: "Analyze this rowing FIT file."
 
 Antigravity will automatically:
 1. **Parse FIT file** → Extract data and generate `ROW_*.json` or `ERG_*.json`
 2. **Generate coach review** → Read JSON and apply `coach_guidelines.md` criteria
-3. **Update report** → Replace placeholder with professional Chinese feedback
+3. **Update report** → Replace placeholder with professional English feedback
 4. **Regenerate share image** → Create `*_SHARE.png` with embedded review
 5. **Cleanup** → Delete temporary JSON file
 
@@ -92,23 +92,23 @@ File: `SpdCoach 2763073 20260123 0811AM.fit`
 
 ### Coach Review (AI Generated)
 
-#### 🎯 训练总结
-本次水上训练里程 **12.66km**，耗时 **75分钟**。
-这是一堂典型的 **超低桨频技术耐力课 (Technical Endurance)**。
-全程度保持在极低的桨频 (**16-18spm**)，心率控制在良好的有氧区间 (平均126bpm)，主要目的是在低强度下通过长距离划行寻找水感和船的滑行距离。
+#### 🎯 Training Summary
+Total distance: **12.66km**, Duration: **75 mins**.
+This was a classic **Low Rate Technical Endurance** session.
+The stroke rate was maintained very low (**16-18spm**) throughout, with heart rate in a solid aerobic zone (avg 126bpm). The main goal was to find boat run and water feel at low intensity over long distance.
 
-#### 🌟 亮点 (Highlights)
-*   **耐心的节奏 (Patience)**: 在长距离段落（第3、4段）中，能够稳定维持在 16-17spm，没有盲目起桨频，这是练就好技术的心理基础。
-*   **实效提升 (DPS Improvement)**: 热身阶段 DPS 仅 8.1m，但在进入主项后（第3段）提升至 **11.0m**，说明身体活动开了之后，推水实效有显著改善，每一桨都划得更“深”了。
-*   **心率控制**: 绝大部分时间处于 UT2 甚至更低的有氧恢复区，非常适合作为大运动量后的恢复或纯技术课。
+#### 🌟 Highlights
+*   **Patience**: In the long segments (3 & 4), you maintained a steady 16-17spm without rushing the rate. This is the mental foundation of good technique.
+*   **DPS Improvement**: During warm-up, DPS was only 8.1m, but in the main block (Seg 3) it improved to **11.0m**. This shows that as you warmed up, your power application improved significantly, and each stroke became "deeper".
+*   **Heart Rate Control**: Most time spent in UT2 or recovery zone, perfect for recovery or pure technical work after heavy load.
 
-#### 🚀 改进空间 (Improvements)
-*   **热身段实效不足**: 第1段和第2段的 DPS 都在 9m 以下。 建议即使是刚下水，也要专注于每一桨的“挂水”质量，不要“空划”。
-*   **速度差异**: 第3段和第4段虽然桨频接近，但配速有一定波动（2:50 vs 2:46）。在自然水域可能受风浪影响，但我们要追求“顶风不掉速，顺风不抢频”。
+#### 🚀 Improvements
+*   **Warm-up Efficiency**: Seg 1 & 2 had DPS below 9m. Even when just starting, focus on the quality of the "catch" and avoid "empty strokes".
+*   **Speed Variance**: Seg 3 & 4 had similar rates but pace varied (2:50 vs 2:46). Likely wind/water conditions, but aim for "consistent speed against wind, controlled rate with wind".
 
-#### 💡 下次训练建议
-*   **起步即专注**: 尝试从下水的第一桨开始就关注 **包含 (Catch)** 和 **支撑 (Connection)**，争取热身时的 DPS 也能稳定在 10m 以上。
-*   **力求恒定**: 在低桨频下，感受船体在拉桨结束后的滑行感（Run）。每一桨的力曲线尽量做饱满。
+#### 💡 Next Session Advice
+*   **Focus from Stroke 1**: Try to focus on **Catch** and **Connection** from the very first stroke. Aim for 10m+ DPS even during warm-up.
+*   **Seek Consistency**: At low rates, feel the "Run" of the boat after the finish. Make the force curve of every stroke full and complete.
 
 ### Share Image
 The skill also generates a social media share image with all metrics and coach review embedded:

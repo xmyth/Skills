@@ -25,11 +25,11 @@ When analyzing a FIT file, execute **ALL** steps automatically without waiting f
 **IMMEDIATELY** after Step 1:
 1. Read the generated JSON analysis file (`*.json`)
 2. Use `references/coach_guidelines.md` for analysis criteria and coaching style
-3. Generate a professional, data-driven review in Chinese following the structure:
-   - **训练总结**: Distance, time, training type
-   - **亮点**: Specific strengths with data references
-   - **改进空间**: Technical gaps with segment references
-   - **下次训练建议**: Actionable drill or focus
+3. Generate a professional, data-driven review in English following the structure:
+   - **Training Summary**: Distance, time, training type
+   - **Highlights**: Specific strengths with data references
+   - **Improvements**: Technical gaps with segment references
+   - **Next Session Advice**: Actionable drill or focus
 
 ### Step 3: Update Report
 Replace the placeholder review in the generated `.md` file with your professional analysis.

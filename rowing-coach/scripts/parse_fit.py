@@ -717,28 +717,28 @@ def generate_coach_review(data):
     
     # Construct Review
     lines = []
-    lines.append(f"### 🎯 训练总结")
-    lines.append(f"本次训练共完成 **{dist_km:.2f}km**，耗时 **{int(total_elapsed//60)}分钟**。")
+    lines.append(f"### Training Summary")
+    lines.append(f"Total Distance: **{dist_km:.2f}km**, Duration: **{int(total_elapsed//60)} min**.")
     
     # Intensity Check
     if avg_rate < 20:
-        intensity = "低桨频有氧 (UT2/UT1)"
-        advice = "保持了良好的节奏控制，适合作为有氧耐力基础训练。"
+        intensity = "Low Rate Aerobic (UT2/UT1)"
+        advice = "Good rhythm control, suitable for aerobic endurance foundation."
     elif avg_rate < 26:
-        intensity = "中高强度 (AT/TR)"
-        advice = "桨频提升明显，注意在高桨频下保持技术动作的完整性。"
+        intensity = "Mod-High Intensity (AT/TR)"
+        advice = "Clear rate increase, maintain technical integrity at higher rates."
     else:
-        intensity = "高强冲刺 (AN)"
-        advice = "冲刺能力训练，注意每桨的实效性。"
+        intensity = "High Intensity / Sprint (AN)"
+        advice = "Sprint capacity training, focus on effectiveness per stroke."
         
-    lines.append(f"整体属于 **{intensity}** 训练类别。")
+    lines.append(f"Overall Type: **{intensity}**.")
     
     # HR Check
     if avg_hr > 0:
-        lines.append(f"平均心率为 **{avg_hr}bpm**，请结合自身最大心率评估负荷。")
+        lines.append(f"Avg HR: **{avg_hr}bpm**. Evaluate load based on your Max HR.")
     
-    lines.append(f"\n> 💡 **教练建议**: {advice}")
-    lines.append(f"> 保持专注，继续积累里程！")
+    lines.append(f"\n> **Coach Advice**: {advice}")
+    lines.append(f"> Stay focused and keep building mileage!")
 
     return "\n".join(lines)
 
@@ -1139,7 +1139,7 @@ def generate_pacing_chart(data, output_dir, file_prefix):
     
     title_str = " | ".join(title_parts)
     
-    plt.title(title_str, pad=20, fontsize=18, fontweight='bold', color='#333333')
+    # plt.title(title_str, pad=20, fontsize=18, fontweight='bold', color='#333333') # Title removed as per user request
     
     # fig.tight_layout() # tight_layout often breaks with offset spines, handled by subplots_adjust  
     
@@ -1796,7 +1796,7 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, 
              with open(output_path, 'r', encoding='utf-8') as old_f:
                  content = old_f.read()
                  # Relaxed match
-                 header_str = "## 👨‍🏫 教练点评 (Coach Review)"
+                 header_str = "## 👨‍🏫 Coach Review"
                  s_idx = content.find(header_str)
                  
                  if s_idx != -1:
@@ -1814,7 +1814,7 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, 
                          existing_review = sub.strip()
                      
                      # Check if it is valid (not placeholder)
-                     if existing_review and "等待 LLM 教练分析中" in existing_review:
+                     if existing_review and "Waiting for Analysis" in existing_review:
                          existing_review = None
          except Exception as e:
              # print(f"Warning: Could not read existing file: {e}")
@@ -1828,8 +1828,8 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, 
     else:
         type_name = "On-Water Rowing"
 
-    title_main = f"🚣‍♀️ {type_name} | {total_dist_km:.1f}km Full Analysis 🌊"
-    image_title = f"🚣‍♀️ {type_name}"
+    title_main = f"{type_name} | {total_dist_km:.1f}km Full Analysis"
+    image_title = f"{type_name}"
 
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(f"# {title_main}\n\n")
@@ -1841,7 +1841,7 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, 
                 # FIT uses UTC. Convert to UTC+8 (Beijing Time)
                 dt_local = dt + datetime.timedelta(hours=8)
                 time_str = dt_local.strftime("%Y-%m-%d %H:%M")
-                f.write(f"> 📅  **Date**: {time_str}\n\n")
+                f.write(f"* **Date**: {time_str}\n")
             except:
                 pass
 
@@ -1872,10 +1872,10 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, 
                  loc_name = get_location_name(start_lat, start_lon)
             
             if loc_name:
-                f.write(f"> 📍  **Location**: {loc_name}\n\n")
+                f.write(f"* **Location**: {loc_name}\n\n")
 
         # Basic Data Summary (Moved here)
-        f.write("## 📝 Summary\n\n")
+        f.write("## Summary\n\n")
         
         # Calculate Averages (Weighted by time for accuracy)
         avg_cad_val = 0
@@ -1918,9 +1918,12 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, 
         
         f.write("\n---\n")
         
-        # REMOVED Chart Section as requested
+        # Insert Chart Image
+        f.write("## Pacing Chart\n\n")
+        f.write(f"![Chart]({base_filename}.png)\n")
+        f.write("\n---\n")
         
-        f.write("## 📊  Full Segments\n\n")
+        f.write("## Full Segments\n\n")
         f.write("| # | Time | Distance | Pace/500m | SPM | HR | DPS | Note |\n")
         f.write("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n")
         
@@ -1970,7 +1973,7 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, 
 
 
         if not is_indoor:
-            f.write("## 🏆 Best Efforts\n\n")
+            f.write("## Best Efforts\n\n")
             
             best_500 = data.get("analysis", {}).get("best_500m")
             best_1k = data.get("analysis", {}).get("best_1k")
@@ -1988,7 +1991,7 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, 
                 f.write("Insufficient data for best efforts.\n")
                 
             f.write("\n---\n")
-        f.write("## 👨‍🏫 Coach Review\n\n")
+        f.write("## Coach Review\n\n")
         
         # Expert System Review
         if forced_review:
@@ -2080,7 +2083,7 @@ def main():
         if review_start == -1:
             review_start = md_content.find("## Coach Review")
             if review_start == -1:
-                review_start = md_content.find("## 👨‍🏫 教练点评")
+                pass # Legacy Chinese header support removed for consistency
         
         review_text = ""
         if review_start != -1:
