@@ -360,6 +360,10 @@ def analyze_rowing(data, max_hr=190, resting_hr=60):
     
     data["segmentation_type"] = segmentation_type
 
+    # Filter out invalid laps (0:00 duration) commonly found in C2 logs
+    laps = [l for l in laps if float(l.get("total_timer_time", 0)) > 1.0]
+    data["laps"] = laps
+
     # 500m Split calculation for Laps
     for i, lap in enumerate(laps):
         # Add index for display 1-based
@@ -430,6 +434,10 @@ def analyze_rowing(data, max_hr=190, resting_hr=60):
     # Calculate Best Efforts
     # Use cleaned data for best splits (per Strategy C)
     cleaned_records = preprocess_records(records)
+    
+    # [Reverted] Sanitize Rest Data in Records for Charting
+    # User requested "straight line connection" instead of zero-drop.
+    # We will handle this by filtering data in generate_pacing_chart instead.
     
     data["analysis"] = {}
     data["analysis"]["best_500m"] = find_best_effort(cleaned_records, 500)
@@ -554,22 +562,27 @@ def preprocess_records(records):
 
     # 2. Moving Average Smoothing
     # We want to smooth Speed and Cadence
-    window_size = 10
+    # User requested tighter smoothing (Window=3) for both metrics.
+    window_speed = 3
+    window_cadence = 3 
+    
     smoothed = []
     
     n = len(cleaned)
     for i in range(n):
-        # Determine window range [start, end]
-        start = max(0, i - window_size // 2)
-        end = min(n, i + window_size // 2 + 1)
-        window = cleaned[start:end]
-        
-        # Calculate means
-        speeds = [float(x.get("speed", 0) or 0) for x in window]
-        cads = [float(x.get("cadence", 0) or 0) for x in window]
-        
-        avg_speed = sum(speeds) / len(speeds)
-        avg_cad = sum(cads) / len(cads)
+        # Speed Window
+        s_start = max(0, i - window_speed // 2)
+        s_end = min(n, i + window_speed // 2 + 1)
+        s_win = cleaned[s_start:s_end]
+        speeds = [float(x.get("speed", 0) or 0) for x in s_win]
+        avg_speed = sum(speeds) / len(speeds) if speeds else 0
+
+        # Cadence Window
+        c_start = max(0, i - window_cadence // 2)
+        c_end = min(n, i + window_cadence // 2 + 1)
+        c_win = cleaned[c_start:c_end]
+        cads = [float(x.get("cadence", 0) or 0) for x in c_win]
+        avg_cad = sum(cads) / len(cads) if cads else 0
         
         # Create new record copy with smoothed values
         new_r = cleaned[i].copy()
@@ -845,13 +858,25 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
     # Concept2 FIT files use the `intensity` field in lap messages to indicate work/rest.
     # Values like 'rest', 'recovery', 'warmup', 'cooldown' indicate non-work intervals.
     # We prioritize this field, falling back to speed heuristic if not available.
+    laps_list = data.get("laps", [])
+
+    # Check for "All Rest" anomaly (Common in some C2 logbook exports)
+    has_intensity = [l for l in laps_list if l.get("intensity") is not None]
+    all_rest_anomaly = False
+    if has_intensity:
+        non_active_keywords = ["rest", "recovery", "warmup", "cooldown"]
+        # If ALL laps with intensity are marked as rest, it's an anomaly.
+        if all(str(l.get("intensity")).lower() in non_active_keywords for l in has_intensity):
+             print("Detected 'All Rest' anomaly in FIT file. Ignoring intensity fields to enable heuristic detection.")
+             all_rest_anomaly = True
+
     processed_laps = []
-    for lap in data.get("laps", []):
+    for lap in laps_list:
         is_rest = False
         
         # Method 1: Check FIT intensity field (most accurate)
         intensity = lap.get("intensity")
-        if intensity is not None:
+        if intensity is not None and not all_rest_anomaly:
             # Common FIT intensity values: 'active', 'rest', 'warmup', 'cooldown', 'recovery'
             # Treat non-'active' as rest for interval workouts
             intensity_str = str(intensity).lower()
@@ -863,14 +888,15 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
             # 0=active, 1=rest, 2=warmup, 3=cooldown, 4=recovery (FIT SDK standard)
             elif isinstance(intensity, int):
                 is_rest = intensity != 0  # Anything other than 0 (active) is considered rest
-            if is_rest and int(lap.get("avg_power", 0) or 0) > 0:
-                is_rest = False
         else:
             # Method 2: Speed heuristic fallback (if intensity field is missing)
             avg_speed = float(lap.get("avg_speed", 0) or 0)
             if avg_speed < 2.0:  # Slower than 4:10/500m
                 is_rest = True
              
+        if is_rest:
+            lap["avg_cadence"] = 0  # Suppress nonsense SPM for rest intervals
+            
         lap["type"] = "Rest" if is_rest else "Work"
         processed_laps.append(lap)
         
@@ -1041,10 +1067,41 @@ def generate_pacing_chart(data, output_dir, file_prefix):
         })
         
     df = pd.DataFrame(df_data)
-    if df.empty: return None
 
-    # No extra rolling needed if using processed data, but strictly speaking Strategy C is 5-point.
-    # We can plot directly.
+    # [NEW] Filter out Rest Interval Data
+    # User requested a "straight line" connection rather than analyzing rest data.
+    # Exclude records that fall within Rest laps.
+    laps = data.get("laps", [])
+    
+    # [NEW] Prepare Rest Mask for specific plots
+    # User requested "straight line" connection for SPM ONLY.
+    # We will exclude rest data points from the SPM series so Matplotlib interpolates across the gap.
+    is_rest_mask = pd.Series([False] * len(df))
+    if not df.empty and "time" in df.columns:
+        rest_ranges = []
+        for lap in laps:
+            is_rest = False
+            if lap.get("type") == "Rest": is_rest = True
+            
+            if is_rest and lap.get("start_time"):
+                try:
+                    s = datetime.datetime.fromisoformat(str(lap.get("start_time")))
+                    dur = float(lap.get("total_timer_time", 0))
+                    e = s + datetime.timedelta(seconds=dur)
+                    rest_ranges.append((s, e))
+                except:
+                    pass
+        
+        if rest_ranges:
+            def is_in_rest(dt_val):
+                if not dt_val: return False
+                for s, e in rest_ranges:
+                     if s <= dt_val < e:
+                        return True
+                return False
+            is_rest_mask = df["time"].apply(is_in_rest)
+            
+    # Calculate smooth columns (Global, for Pace/HR which show all data)
     df["pace_smooth"] = df["pace_sec"]
     df["cad_smooth"] = df["cadence"]
     df["hr_smooth"] = df["heart_rate"]
@@ -1123,7 +1180,9 @@ def generate_pacing_chart(data, output_dir, file_prefix):
     ax2 = ax1.twinx()  
     color2 = '#ff7f0e' # Orange
     ax2.set_ylabel('Cadence (spm)', color=color2)
-    ax2.plot(df["distance"], df["cad_smooth"], color=color2, linewidth=1.5, alpha=0.7, label="Cadence")
+    # Filter SPM Data: Remove Rest Intervals to enable Straight Line Connection
+    spm_df = df[~is_rest_mask]
+    ax2.plot(spm_df["distance"], spm_df["cad_smooth"], color=color2, linewidth=1.5, alpha=0.7, label="Cadence")
     ax2.tick_params(axis='y', labelcolor=color2)
     ax2.grid(False) # Turn off grid for second axis to avoid clutter
     
@@ -1159,15 +1218,70 @@ def generate_pacing_chart(data, output_dir, file_prefix):
     if total_dist > 0: title_parts.append(f"{total_dist:.2f} km")
     if total_time > 0: title_parts.append(f"{total_time:.1f} min")
     title_parts.append(f"{avg_pace} /500m")
-    title_parts.append(f"{avg_cad} spm")
-    if avg_hr > 0: title_parts.append(f"{avg_hr} bpm")
+    title_parts.append(f"{avg_cad if avg_cad > 0 else '-'} spm")
+    title_parts.append(f"{avg_hr if avg_hr > 0 else '-'} bpm")
     
     title_str = " | ".join(title_parts)
     
-    # plt.title(title_str, pad=20, fontsize=18, fontweight='bold', color='#333333') # Title removed as per user request
+    plt.title(title_str, pad=20, fontsize=18, fontweight='bold', color='#333333')
     
     # fig.tight_layout() # tight_layout often breaks with offset spines, handled by subplots_adjust  
     
+    # [NEW] Plot Segment Markers
+    # Add vertical lines and labels for Work Segments
+    # Use axes transform for placing labels at fixed height
+    trans_markers = ax1.get_xaxis_transform()
+    
+    # Use enumerate to get exact index matching the table (1-based)
+    for i, lap in enumerate(laps):
+        is_rest = False
+        if lap.get("type") == "Rest": is_rest = True
+        
+        # Only label Work laps
+        if not is_rest:
+             s_ts = lap.get("start_time")
+             dur = float(lap.get("total_timer_time", 0))
+             
+             if s_ts and dur > 10: # Avoid tiny ghost laps
+                 try:
+                    if isinstance(s_ts, str):
+                        s_dt = datetime.datetime.fromisoformat(s_ts)
+                    else:
+                        s_dt = s_ts
+                    
+                    # Find start distance in DF
+                    if not df.empty and s_dt >= df["time"].min() and s_dt <= df["time"].max():
+                         idx = (df["time"] - s_dt).abs().idxmin()
+                         start_dist_val = df.loc[idx, "distance"]
+                         
+                         # End distance via duration
+                         e_dt = s_dt + datetime.timedelta(seconds=dur)
+                         # Clamp to max time (allow small buffer?)
+                         if e_dt > df["time"].max(): e_dt = df["time"].max()
+                         
+                         idx_e = (df["time"] - e_dt).abs().idxmin()
+                         end_dist_val = df.loc[idx_e, "distance"]
+                         
+                         # Draw Vertical Start Line (Gray Dashed)
+                         ax1.axvline(x=start_dist_val, color='#888888', linestyle='--', linewidth=0.8, alpha=0.5)
+                         # Draw Vertical End Line (Gray Dashed) - "Workout End" indication for this segment
+                         ax1.axvline(x=end_dist_val, color='#888888', linestyle='--', linewidth=0.8, alpha=0.5)
+
+                         # Add Label (Segment Number) centered in the segment
+                         mid = (start_dist_val + end_dist_val) / 2
+                         
+                         # Only label if segment has significant length (e.g. > 50m) to avoid clutter
+                         if (end_dist_val - start_dist_val) > 50:
+                             # Label uses exact table index: i+1
+                             ax1.text(mid, 0.99, str(i + 1), 
+                                      transform=trans_markers, 
+                                      ha='center', va='top', 
+                                      fontsize=9, fontweight='bold', 
+                                      color='#444444',
+                                      bbox=dict(facecolor='white', alpha=0.5, edgecolor='none', pad=1))
+                 except Exception as e:
+                     pass
+
     # Check if indoor
     is_indoor = False
     if session.get("sub_sport") == "indoor_rowing":
@@ -1358,7 +1472,13 @@ def generate_share_image(data, chart_buffer, review_text, output_dir, file_prefi
     
     with Pilmoji(blk_header) as pilmoji:
         pilmoji.text((padding, 40), title, font=font_title, fill=text_color)
-        pilmoji.text((padding, 110), f"📅 {date_str}   📍 {loc if loc else 'Unknown Location'}", font=font_small, fill="#666666")
+        
+        # Build subtitle
+        sub_text = f"📅 {date_str}"
+        if loc:
+             sub_text += f"   📍 {loc}"
+             
+        pilmoji.text((padding, 110), sub_text, font=font_small, fill="#666666")
         
     # Draw decorative line (Standard ImageDraw is fine for lines, or Pilmoji exposes it?)
     # Pilmoji wraps ImageDraw, but let's use standard draw for shapes if needed, or just create a fresh draw for non-text.
@@ -1442,8 +1562,8 @@ def generate_share_image(data, chart_buffer, review_text, output_dir, file_prefi
         ("Elapsed Time (min)", f"{elapsed_min:.1f}"),
         ("Move Time (min)", f"{time_min:.1f}"),
         ("Avg Pace /500m", f"{avg_pace}"),
-        ("Avg Rate (spm)", f"{avg_rate}"),
-        ("Avg HR (bpm)", f"{avg_hr}")
+        ("Avg Rate (spm)", f"{avg_rate}" if avg_rate > 0 else "-"),
+        ("Avg HR (bpm)", f"{avg_hr}" if avg_hr > 0 else "-")
     ]
     
     col_w = (img_width - 2*padding) / 3
@@ -1515,7 +1635,8 @@ def generate_share_image(data, chart_buffer, review_text, output_dir, file_prefi
              dur_str = f"{h}:{m:02}:{s:02}"
         dist_str = f"{int(round(lap.get('total_distance', 0)))}m"
         pace = str(lap.get("avg_500m_split", "-"))
-        spm = str(int(lap.get("avg_cadence", 0)))
+        spm_val = int(lap.get("avg_cadence", 0))
+        spm = str(spm_val) if spm_val > 0 else "-"
         
         avg_spd = lap.get("avg_speed", 0)
         cad = lap.get("avg_cadence", 0)
@@ -1537,7 +1658,8 @@ def generate_share_image(data, chart_buffer, review_text, output_dir, file_prefi
             l_type = classify_training_zone(hr_val, cad_val, MAX_HR, RESTING_HR)
             if not l_type: l_type = "Work"
             
-        hr_str = str(int(lap.get("avg_heart_rate", 0) or 0))
+        hr_val = int(lap.get("avg_heart_rate", 0) or 0)
+        hr_str = str(hr_val) if hr_val > 0 else "-"
 
         row_vals = [num, dur_str, dist_str, pace, spm, hr_str, dps_str, l_type]
         
@@ -1988,6 +2110,7 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, 
             
             pace = lap.get("avg_500m_split", "-")
             cad = lap.get("avg_cadence", 0) or 0
+            cad_str = str(cad) if cad > 0 else "-"
             hr = lap.get("avg_heart_rate", 0) or 0
             avg_spd = lap.get("avg_speed", 0)
             
@@ -2008,7 +2131,7 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, 
             
             # No special formatting - plain table row
             # Round distance to nearest integer to avoid 499m -> 499 (truncation) issue
-            row_str = f"| {num} | {dur_str} | {int(round(dist))}m | {pace} | {cad} | {hr_str} | {dps_str} | {note} |"
+            row_str = f"| {num} | {dur_str} | {int(round(dist))}m | {pace} | {cad_str} | {hr_str} | {dps_str} | {note} |"
             f.write(row_str + "\n")
             
         f.write("\n---\n")
@@ -2366,9 +2489,8 @@ def generate_combined_chart_image(data, chart_buf):
     subtitle_parts.append(f"{dist_km:.2f}km")
     subtitle_parts.append(f"{time_min:.1f}min")
     subtitle_parts.append(f"{avg_pace}/500m")
-    subtitle_parts.append(f"{avg_rate}spm")
-    if avg_hr > 0:
-        subtitle_parts.append(f"{avg_hr}bpm")
+    subtitle_parts.append(f"{avg_rate if avg_rate > 0 else '-'}spm")
+    subtitle_parts.append(f"{avg_hr if avg_hr > 0 else '-'}bpm")
         
     subtitle_str = "  •  ".join(subtitle_parts)
 
@@ -2424,7 +2546,8 @@ def generate_combined_chart_image(data, chart_buf):
         
         dist_str = f"{int(round(lap.get('total_distance', 0)))}m"
         pace = str(lap.get("avg_500m_split", "-"))
-        spm = str(int(lap.get("avg_cadence", 0)))
+        spm_val = int(lap.get("avg_cadence", 0))
+        spm = str(spm_val) if spm_val > 0 else "-"
         
         avg_spd = lap.get("avg_speed", 0)
         cad = lap.get("avg_cadence", 0)
@@ -2439,7 +2562,8 @@ def generate_combined_chart_image(data, chart_buf):
              l_type = classify_training_zone(hr_val, cad_val, MAX_HR, RESTING_HR)
              if not l_type: l_type = "Work"
 
-        hr_str = str(int(lap.get("avg_heart_rate", 0) or 0))
+        hr_val = int(lap.get("avg_heart_rate", 0) or 0)
+        hr_str = str(hr_val) if hr_val > 0 else "-"
         
         row_vals = [num, dur_str, dist_str, pace, spm, hr_str, dps_str, l_type]
         
