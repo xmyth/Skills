@@ -357,9 +357,6 @@ def find_best_effort(records, target_dist_m):
                     if split_seconds < best_pace_seconds:
                         best_pace_seconds = split_seconds
                         
-                        # DEBUG: Print found best effort
-                        # print(f"New Best {target_dist_m}m: {calculate_split(dist_diff/duration)} (Time: {duration}s, Dist: {dist_diff}m, Start: {t_start_str})")
-                        
                         # Calculate normalized time for the exact target distance
                         # This avoids confusion where "Best 500m" shows time for 510m
                         normalized_duration = split_seconds * (target_dist_m / 500)
@@ -1630,8 +1627,7 @@ def generate_pacing_chart(data, output_dir, file_prefix):
                                   color=color, fontsize=12, fontweight='bold', ha='center', va='bottom',
                                   transform=trans)
 
-                except Exception as e:
-                    # print(f"Error plotting {key}: {e}")
+                except Exception:
                     pass
 
 
@@ -2262,8 +2258,7 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, 
                      # Check if it is valid (not placeholder)
                      if existing_review and "Waiting for Analysis" in existing_review:
                          existing_review = None
-         except Exception as e:
-             # print(f"Warning: Could not read existing file: {e}")
+         except Exception:
              pass
     # --------------------------------------
 
