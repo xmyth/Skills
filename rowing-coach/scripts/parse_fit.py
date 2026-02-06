@@ -16,6 +16,7 @@ import datetime
 import os
 import io
 
+
 try:
     import fitparse
 except ImportError:
@@ -124,7 +125,12 @@ def get_location_name(lat_semicircles, lon_semicircles):
             return city or location.address
             
     except Exception as e:
-        print(f"DEBUG: Geopy Error: {e}", file=sys.stderr)
+        # Catch explicit network errors (URLError) and general exceptions
+        # to ensure the script never crashes due to partial internet failure.
+        print(f"Warning: Geocoding failed (non-fatal): {e}", file=sys.stderr)
+        return None
+    except:
+        # Catch-all for non-Exception errors (SystemExit, etc - though unlikely here)
         return None
     
     return None
@@ -218,6 +224,54 @@ def calculate_split(speed_m_s):
     tenth = int((split_seconds - int(split_seconds)) * 10)
     return f"{minutes}:{seconds:02}.{tenth}"
 
+def calculate_weighted_average(records, key):
+    """
+    Calculate time-weighted average for a specific metric key using Trapezoidal rule.
+    Expects records to have 'dt' (datetime) and 'data' (dict) or be direct dicts if pre-processed.
+    """
+    if not records or len(records) < 2:
+        if records:
+            # Single record fallback
+            val = records[0].get("data", records[0]).get(key)
+            return float(val) if val is not None else 0
+        return 0
+
+    total_area = 0.0
+    total_time = 0.0
+    
+    # Extract valid points (time, value)
+    points = []
+    for r in records:
+        # Handle both structure types (raw record vs processed wrapper)
+        data_src = r.get("data", r)
+        val = data_src.get(key)
+        
+        # timestamp key might vary ('dt' is usually added in preprocessing)
+        ts = r.get("dt")
+        
+        if ts is not None and val is not None and str(val).replace('.','',1).isdigit():
+             points.append((ts, float(val)))
+             
+    if len(points) < 2:
+        return points[0][1] if points else 0
+        
+    for i in range(len(points) - 1):
+        t1, v1 = points[i]
+        t2, v2 = points[i+1]
+        
+        dt = (t2 - t1).total_seconds()
+        if dt > 0:
+            # Trapezoid area: average of values * duration
+            area = ((v1 + v2) / 2) * dt
+            total_area += area
+            total_time += dt
+            
+    if total_time > 0:
+        return total_area / total_time
+    
+    # Fallback to simple average if time difference is 0 (duplicate timestamps)
+    return sum(p[1] for p in points) / len(points)
+
 def create_lap_from_records(records_chunk):
     """Summarize a list of records into a Lap object."""
     if not records_chunk: return {}
@@ -231,22 +285,24 @@ def create_lap_from_records(records_chunk):
     if duration == 0: duration = 1 # avoid div/0
     
     # Distance
-    dist_start = r_start["dist"]
-    dist_end = r_end["dist"]
+    dist_start = float(r_start.get("dist", 0) or 0)
+    dist_end = float(r_end.get("dist", 0) or 0)
     total_dist = dist_end - dist_start
-    if total_dist < 0: total_dist = 0 # should not happen
+    # Fallback if dist not in wrapper
+    if total_dist == 0 and "data" in r_start:
+         d1 = float(r_start["data"].get("distance", 0) or 0)
+         d2 = float(r_end["data"].get("distance", 0) or 0)
+         total_dist = d2 - d1
+
+    if total_dist < 0: total_dist = 0 
     
     # Averages
     avg_spd = total_dist / duration
     
-    # Cadence / HR / Power
-    cadences = [float(r["data"].get("cadence",0)) for r in records_chunk if r["data"].get("cadence")]
-    hrs = [float(r["data"].get("heart_rate",0)) for r in records_chunk if r["data"].get("heart_rate")]
-    pwrs = [float(r["data"].get("power",0)) for r in records_chunk if r["data"].get("power")]
-    
-    avg_cad = sum(cadences)/len(cadences) if cadences else 0
-    avg_hr = sum(hrs)/len(hrs) if hrs else 0
-    avg_pwr = sum(pwrs)/len(pwrs) if pwrs else 0
+    # Weighted Averages for Metrics
+    avg_cad = calculate_weighted_average(records_chunk, "cadence")
+    avg_hr = calculate_weighted_average(records_chunk, "heart_rate")
+    avg_pwr = calculate_weighted_average(records_chunk, "power")
     
     return {
         "start_time": t_start.isoformat(),
@@ -254,9 +310,9 @@ def create_lap_from_records(records_chunk):
         "total_elapsed_time": duration,
         "total_distance": total_dist,
         "avg_speed": avg_spd,
-        "avg_cadence": int(avg_cad),
-        "avg_heart_rate": int(avg_hr),
-        "avg_power": int(avg_pwr)
+        "avg_cadence": int(round(avg_cad)),
+        "avg_heart_rate": int(round(avg_hr)),
+        "avg_power": int(round(avg_pwr))
     }
 
 def find_best_effort(records, target_dist_m):
@@ -276,8 +332,7 @@ def find_best_effort(records, target_dist_m):
     
     while end_idx < n:
         # Check current window distance
-        # We need cumulative distance from record objects if possible, or sum
-        # The records have "distance" which is cumulative total distance.
+        # Original: Use raw distance from record
         d_start = float(records[start_idx].get("distance", 0) or 0)
         d_end = float(records[end_idx].get("distance", 0) or 0)
         dist_diff = d_end - d_start
@@ -296,10 +351,14 @@ def find_best_effort(records, target_dist_m):
                     # Calculate split (time per 500m)
                     # speed = dist / duration
                     # split = 500 / speed = 500 * duration / dist
+                    raw_speed = dist_diff / duration
                     split_seconds = 500 * duration / dist_diff
                     
                     if split_seconds < best_pace_seconds:
                         best_pace_seconds = split_seconds
+                        
+                        # DEBUG: Print found best effort
+                        # print(f"New Best {target_dist_m}m: {calculate_split(dist_diff/duration)} (Time: {duration}s, Dist: {dist_diff}m, Start: {t_start_str})")
                         
                         # Calculate normalized time for the exact target distance
                         # This avoids confusion where "Best 500m" shows time for 510m
@@ -397,30 +456,25 @@ def analyze_rowing(data, max_hr=190, resting_hr=60):
                 duration_s = float(lap.get("total_timer_time"))
                 end_dt = start_dt + datetime.timedelta(seconds=duration_s)
                 
-                # Filter records for this lap
+                # Filter records for this lap (keep wrapper with dt)
                 lap_records = [
-                    x["data"] for x in parsed_records 
+                    x for x in parsed_records 
                     if x["dt"] >= start_dt and x["dt"] < end_dt
                 ]
                 
                 if lap_records:
-                    # Backfill cadence if missing or zero
+                    # Backfill metrics using weighted average
                     if not lap.get("avg_cadence"):
-                        vals = [float(r.get("cadence", 0)) for r in lap_records if r.get("cadence") is not None]
-                        vals = [v for v in vals if v > 0]
-                        if vals: lap["avg_cadence"] = round(sum(vals) / len(vals))
+                        val = calculate_weighted_average(lap_records, "cadence")
+                        if val > 0: lap["avg_cadence"] = int(round(val))
                         
-                    # Backfill heart rate if missing or zero
                     if not lap.get("avg_heart_rate"):
-                        vals = [float(r.get("heart_rate", 0)) for r in lap_records if r.get("heart_rate") is not None]
-                        vals = [v for v in vals if v > 0]
-                        if vals: lap["avg_heart_rate"] = round(sum(vals) / len(vals))
+                        val = calculate_weighted_average(lap_records, "heart_rate")
+                        if val > 0: lap["avg_heart_rate"] = int(round(val))
 
-                    # Backfill power if missing or zero
                     if not lap.get("avg_power"):
-                        vals = [float(r.get("power", 0)) for r in lap_records if r.get("power") is not None]
-                        vals = [v for v in vals if v > 0]
-                        if vals: lap["avg_power"] = round(sum(vals) / len(vals))
+                        val = calculate_weighted_average(lap_records, "power")
+                        if val > 0: lap["avg_power"] = int(round(val))
                         
             except ValueError:
                 pass
@@ -547,111 +601,355 @@ def preprocess_records(records):
     """
     Data Cleaning & Smoothing (Strategy C - Phase 1).
     1. Filter outliers (SPM > 60).
-    2. Apply Moving Average smoothing (Window=5).
+    2. Apply Time-Based Moving Average smoothing (Window=3s).
     """
     cleaned = []
-    # 1. Outlier Removal
+    prev_dt = None
+    # 1. Outlier Removal & Timestamp Parsing
+
     for r in records:
         cad = float(r.get("cadence", 0) or 0)
-        # Filter obvious bad data (but allow 0 for rest)
         if cad > 60:
             continue
-        cleaned.append(r)
-        
-    if not cleaned: return []
-
-    # 2. Moving Average Smoothing
-    # We want to smooth Speed and Cadence
-    # User requested tighter smoothing (Window=3) for both metrics.
-    window_speed = 3
-    window_cadence = 3 
-    
-    smoothed = []
-    
-    n = len(cleaned)
-    for i in range(n):
-        # Speed Window
-        s_start = max(0, i - window_speed // 2)
-        s_end = min(n, i + window_speed // 2 + 1)
-        s_win = cleaned[s_start:s_end]
-        speeds = [float(x.get("speed", 0) or 0) for x in s_win]
-        avg_speed = sum(speeds) / len(speeds) if speeds else 0
-
-        # Cadence Window
-        c_start = max(0, i - window_cadence // 2)
-        c_end = min(n, i + window_cadence // 2 + 1)
-        c_win = cleaned[c_start:c_end]
-        cads = [float(x.get("cadence", 0) or 0) for x in c_win]
-        avg_cad = sum(cads) / len(cads) if cads else 0
-        
-        # Create new record copy with smoothed values
-        new_r = cleaned[i].copy()
-        new_r["speed_smooth"] = avg_speed
-        new_r["cadence_smooth"] = avg_cad
-        
-        # Parse timestamp for logic
-        ts = new_r.get("timestamp")
+            
+        # Parse timestamp immediately for time-based logic
+        ts = r.get("timestamp")
         if ts:
              try:
-                 new_r["dt"] = datetime.datetime.fromisoformat(str(ts))
+                 r["dt"] = datetime.datetime.fromisoformat(str(ts))
+                 if prev_dt:
+                    r["delta_in_seconds"] = (r["dt"] - prev_dt).total_seconds()
+                 else:
+                    r["delta_in_seconds"] = 0   
+                 prev_dt = r["dt"]
+                 cleaned.append(r)
              except:
                  continue
                  
+    if not cleaned: return []
+
+    
+    
+    # 1.5 Double Cadence Correction (User Request: Merge 2 spikes into 1 stroke)
+    # Phenomenon: 36spm/39spm detected in a 18spm steady state.
+    # Logic: If val > 1.7 * local_median, assume double-counting and divide by 2.
+    cad_values = [x["cadence"] for x in cleaned]
+    n_len = len(cad_values)
+    w_size = 7
+    filtered_cad = list(cad_values)
+    
+    if n_len >= w_size:
+        pad_width = w_size // 2
+        for i in range(n_len):
+            w_start = max(0, i - pad_width)
+            w_end = min(n_len, i + pad_width + 1)
+            window = cad_values[w_start:w_end]
+            # Use median for robustness against the spike itself
+            window.sort()
+            local_med = window[len(window)//2]
+            
+            # Avoid division by zero or correcting logical sprints (e.g. >50)
+            if local_med > 5: 
+                if cad_values[i] > 1.7 * local_med:
+                   # Detected double stroke! Halve it.
+                   filtered_cad[i] = cad_values[i] / 2.0
+    
+    # Update cleaned records
+    for i, r in enumerate(cleaned):
+        r["cadence"] = filtered_cad[i]
+    
+    # 2. Time-Based Smoothing (Speed Only)
+    # User Request "Enable Speed Smoothing" (2026-02-06)
+    # Strategy: Smooth Speed (Window +/- 3s), Keep Cadence/HR Raw.
+
+    # Use a centered window of ~6 seconds ( +/- 3.0s )
+    WINDOW_HALF_SEC = 3
+    
+    smoothed = []
+    n = len(cleaned)
+    
+    # Optimization: Moving window indices
+    left_idx = 0
+    right_idx = 0
+    
+    for i in range(n):
+        curr_dt = cleaned[i]["dt"]
+        min_dt = curr_dt - datetime.timedelta(seconds=WINDOW_HALF_SEC)
+        max_dt = curr_dt + datetime.timedelta(seconds=WINDOW_HALF_SEC)
+        
+        # Advance left_idx until inside window
+        while left_idx < n and cleaned[left_idx]["dt"] < min_dt:
+            left_idx += 1
+            
+        # Advance right_idx until outside window
+        if right_idx < left_idx: right_idx = left_idx
+        while right_idx < n and cleaned[right_idx]["dt"] <= max_dt:
+            right_idx += 1
+            
+        # Window is [left_idx, right_idx)
+        window = cleaned[left_idx:right_idx]
+        
+        avg_speed = calculate_weighted_average(window, "speed") if window else 0
+        
+        new_r = cleaned[i].copy()
+        new_r["speed_smooth"] = avg_speed
+        # Keep Cadence and HR Raw (User Request)
+        new_r["cadence_smooth"] = cleaned[i]["cadence"]
+        new_r["heart_rate_smooth"] = float(cleaned[i].get("heart_rate", 0) or 0)
+        
         smoothed.append(new_r)
         
     return smoothed
 
+try:
+    import ruptures as rpt
+except ImportError:
+    rpt = None
+
+def find_segments_ruptures(records):
+    """
+    Use Ruptures (Change Point Detection) to find segments.
+    Algorithm: Pelt (Pruned Exact Linear Time)
+    Model: RBF (Radial Basis Function)
+    Signal: Standardized Speed & Cadence
+    """
+    if not rpt:
+        print("Ruptures not installed.")
+        return []
+        
+    if not records:
+        return []
+
+    # 1. Prepare Signal with Time-Based Resampling
+    # Extract arrays
+    timestamps = []
+    speeds_raw = []
+    cads_raw = []
+    
+    start_dt = records[0]["dt"]
+    
+    for r in records:
+        t_delta = (r["dt"] - start_dt).total_seconds()
+        timestamps.append(t_delta)
+        speeds_raw.append(float(r.get("speed", 0) or 0))
+        cads_raw.append(float(r.get("cadence", 0) or 0))
+        
+    timestamps = np.array(timestamps)
+    speeds_raw = np.array(speeds_raw)
+    cads_raw = np.array(cads_raw)
+    
+    # Create Uniform Grid (1Hz)
+    if len(timestamps) < 2: return []
+    
+    duration = timestamps[-1]
+    if duration <= 0: return []
+    
+    # 1Hz grid: 0, 1, 2, ... duration
+    t_grid = np.arange(0, duration + 1, 1.0)
+    
+    if len(t_grid) < 10: return []
+    
+    # Interpolate onto grid
+    s_interp = np.interp(t_grid, timestamps, speeds_raw)
+    c_interp = np.interp(t_grid, timestamps, cads_raw)
+    
+    # 1.1 Zero-out gaps (Stops)
+    # Find gaps in original data > 6 seconds (User requested 6s)
+    gap_threshold = 6.0
+    for i in range(len(timestamps) - 1):
+        t_curr = timestamps[i]
+        t_next = timestamps[i+1]
+        if (t_next - t_curr) > gap_threshold:
+            # Mask out this range in the interpolated grid
+            # t_grid is 1Hz, so indices map directly to seconds roughly
+            # Find indices in t_grid that fall strictly within the gap
+            # We leave the boundary points to allow for some transition, but kill the middle
+            mask = (t_grid > t_curr + 1.0) & (t_grid < t_next - 1.0)
+            s_interp[mask] = 0.0
+            c_interp[mask] = 0.0
+
+    # Standardize (Z-score) on the UNIFORM data
+    s_mean, s_std = np.mean(s_interp), np.std(s_interp)
+    c_mean, c_std = np.mean(c_interp), np.std(c_interp)
+    
+    s_std = s_std if s_std > 1e-6 else 1.0
+    c_std = c_std if c_std > 1e-6 else 1.0
+    
+    s_norm = (s_interp - s_mean) / s_std
+    c_norm = (c_interp - c_mean) / c_std
+    
+    # User requested removing HR from auto segmentation (Speed + Cadence only)
+    signal = np.stack([s_norm, c_norm], axis=1)
+
+    # 2. Apply Detection on Uniform Grid
+    # Penalty: User requested 25.
+    algo = rpt.Pelt(model="rbf").fit(signal)
+    penalty = 25
+    breakpoints_time = algo.predict(pen=penalty) # These are INDICES in t_grid, which map 1:1 to SECONDS
+    
+    # 3. Map Time Breakpoints back to Record Indices
+    # We need to find the record index closest to each time breakpoint
+    breakpoints_indices = []
+    
+    # We use searchsorted to map time -> original index
+    # timestamps is sorted time of original records
+    # breakpoints_time (seconds) roughly maps to timestamps values
+    
+    for t_bkp in breakpoints_time:
+        # t_bkp is time in seconds from start
+        # Find index in timestamps where value >= t_bkp
+        idx = np.searchsorted(timestamps, t_bkp)
+        if idx >= len(records): 
+            idx = len(records)
+        breakpoints_indices.append(idx)
+        
+    # Remove duplicates and sort (just in case)
+    breakpoints_indices = sorted(list(set(breakpoints_indices)))
+    # Ensure end index is correct
+    if breakpoints_indices[-1] != len(records):
+        if breakpoints_indices[-1] < len(records):
+             breakpoints_indices.append(len(records))
+        else:
+             breakpoints_indices[-1] = len(records)
+    
+    segments = []
+    start_idx = 0
+    lap_num = 1
+    
+    for end_idx in breakpoints_indices:
+        if end_idx <= start_idx: continue
+        
+        # Segment slice
+        seg_records = records[start_idx:end_idx]
+        if not seg_records: 
+             start_idx = end_idx
+             continue
+        
+        # Filter tiny segments (noise)
+        duration_sec = 0
+        try:
+            t0 = seg_records[0]["dt"]
+            t1 = seg_records[-1]["dt"]
+            duration_sec = (t1 - t0).total_seconds()
+        except: pass
+        
+        # Ignore extremely short segments (< 10s)
+        if duration_sec < 10: 
+             start_idx = end_idx # Skip
+             continue
+
+        # Prepare chunk for create_lap_from_records
+        compat_chunk = []
+        for r in seg_records:
+            compat_chunk.append({
+                "dt": r["dt"],
+                "dist": float(r.get("distance", 0) or 0),
+                "data": r,
+                "speed": r.get("speed_smooth", 0)
+            })
+            
+        l_dict = create_lap_from_records(compat_chunk)
+        l_dict["lap_number"] = lap_num
+        
+        # Auto-Classify Type
+        # Type classification should use the WEIGHTED AVERAGES we just computed in create_lap_from_records
+        # But create_lap_from_records doesn't calculate weighted average for Speed yet?
+        # It does simple dist/time. Let's trust that for Speed as it's the physical reality.
+        # But Cadence is weighted.
+        
+        avg_s = l_dict.get("avg_speed", 0)
+        avg_c = l_dict.get("avg_cadence", 0)
+        
+        if avg_s > 2.0 and avg_c > 15:
+            l_dict["type"] = "Work"
+        elif avg_s < 1.0:
+            l_dict["type"] = "Rest"
+        else:
+            l_dict["type"] = "Active" # Recovery paddling
+            
+        l_dict["phase"] = l_dict["type"]
+            
+        segments.append(l_dict)
+        lap_num += 1
+        start_idx = end_idx
+        
+    return segments
+
 def auto_segment(records):
     """
-    Strategy C: Change Point Detection (CPD).
-    Uses statistical divergence to identify segments.
+    Wrapper: Try Ruptures first, then fallback to manual Time-Based CPD.
     """
-    # 1. Preprocess
+    # 1. Preprocess (Smoothed)
     data = preprocess_records(records)
     if not data: return []
     
-    # 2. CPD Logic
+    # 2. Ruptures
+    if rpt:
+        print(f"Using Ruptures (Pelt) for segmentation...")
+        return find_segments_ruptures(data)
+    
+    # 3. Fallback Manual Logic
+    print("Ruptures not available, using manual time-based segmentation...")
     segments = []
     current_segment = [data[0]]
     
-    # Parameters for CPD
-    # Threshold for speed change: 0.5 m/s shift triggers a cut
-    # Or percentage change? Absolute is safer for rowing.
-    CHANGE_THRESH = 0.4
+    # Parameters
+    GAP_THRESH_SEC = 8.0      # New segment if data gap > 5s
+    WINDOW_SEC = 15.0         # Look back 15s for trend comparison
+    CHANGE_THRESH = 1.5       # Speed divergence threshold
+    MIN_SEG_DURATION = 30.0   # Minimum duration to allow a split (unless rest)
     
     for i in range(1, len(data)):
         p = data[i]
+        prev_p = data[i-1]
+        
+        curr_dt = p["dt"]
+        prev_dt = prev_p["dt"]
+        
+        # A. Gap Detection
+        time_diff = (curr_dt - prev_dt).total_seconds()
+        if time_diff > GAP_THRESH_SEC:
+            # Force split due to gap (likely auto-pause or connection loss)
+            if current_segment:
+                segments.append(current_segment)
+            current_segment = [p]
+            continue
+            
         curr_speed = p["speed_smooth"]
         
         # Calculate stats of current segment so far
-        # Optimization: Maintaining running sum would be faster, but len is small enough
         seg_speeds = [x["speed_smooth"] for x in current_segment]
         seg_mean = sum(seg_speeds) / len(seg_speeds)
         
-        # Look at local trend (last 10 seconds / ~10 points)
-        # If local trend diverges from segment mean, we have a change point
-        local_window = data[max(0, i-10):i+1] # Look back a bit and include current
-        local_speeds = [x["speed_smooth"] for x in local_window]
-        local_mean = sum(local_speeds) / len(local_speeds)
+        # B. Time-Based Local Window
+        # Find records within [curr_dt - WINDOW_SEC, curr_dt]
+        # Since 'data' is sorted by time, we can look backwards from i
+        local_speeds = []
+        for j in range(i, -1, -1):
+            rec = data[j]
+            if (curr_dt - rec["dt"]).total_seconds() > WINDOW_SEC:
+                break
+            local_speeds.append(rec["speed_smooth"])
+            
+        if not local_speeds:
+            local_mean = curr_speed
+        else:
+            local_mean = sum(local_speeds) / len(local_speeds)
         
         diff = abs(local_mean - seg_mean)
         
-        # Trigger Split if:
-        # 1. Divergence is high
-        # 2. AND Segment is long enough (don't split immediately, allow 45s buffer)
-        # Exception: If we drop to near zero speed (rest), allow split earlier
+        # C. Split Logic
         is_stop = curr_speed < 1.0 and seg_mean > 2.0
         seg_duration = (current_segment[-1]["dt"] - current_segment[0]["dt"]).total_seconds()
         
         should_split = False
-        if diff > 0.6: # Increased threshold from 0.4
-             if seg_duration > 45:
+        if diff > CHANGE_THRESH:
+             if seg_duration > MIN_SEG_DURATION:
                  should_split = True
              elif is_stop and seg_duration > 20:
                  should_split = True
         
         if should_split:
-            # CHANGE DETECTED
             segments.append(current_segment)
             current_segment = [p]
         else:
@@ -660,34 +958,22 @@ def auto_segment(records):
     if current_segment:
         segments.append(current_segment)
         
-    # We still want to convert list-of-dicts to Laps
-    # Note: create_lap_from_records expects "dt", "dist", "data". 
-    # But our preprocessed data is flat. We need to adapt create_lap_from_records or map back.
-    # Actually, our preprocessed 'data' HAS 'dt' and all fields.
-    # BUT create_lap_from_records uses r["data"]... let's fix that adapter quickly below.
-    
     laps = []
     for chunk in segments:
-        # Adapt chunk to simpler format expected by helper, OR fix helper
-        # Helper expects: { "dt": ..., "dist": ..., "data": {original} }
-        # Our chunk is: { "dt": ..., "speed_smooth": ..., ...original fields... }
-        
-        # Let's map it for compatibility
         compat_chunk = []
         for r in chunk:
             compat_chunk.append({
                 "dt": r["dt"],
                 "dist": float(r.get("distance", 0)),
-                "data": r, # Pass self as data source
-                "speed": r["speed_smooth"] # Use smoothed speed for analysis? Or raw?
-                # Use RAW for "Average Pace" reporting, but Smoothed was used for segmentation.
-                # Let's pass raw data for metrics to be honest to the effort.
+                "data": r, 
+                "speed": r["speed_smooth"]
             })
         
-        laps.append(create_lap_from_records(compat_chunk))
+        if compat_chunk:
+            laps.append(create_lap_from_records(compat_chunk))
         
     # Filter noise
-    laps = [l for l in laps if l.get("total_distance", 0) >= 100]
+    laps = [l for l in laps if l.get("total_distance", 0) >= 50] # Reduced from 100 to catch shorter intervals
     
     return laps
 
@@ -1044,7 +1330,7 @@ def generate_pacing_chart(data, output_dir, file_prefix):
         # Prefer smoothed values if available
         speed = r.get("speed_smooth", r.get("speed"))
         cad = r.get("cadence_smooth", r.get("cadence"))
-        hr = r.get("heart_rate")
+        hr = r.get("heart_rate_smooth", r.get("heart_rate"))
         
         if not dt or dist is None: continue
             
