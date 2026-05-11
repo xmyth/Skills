@@ -40,10 +40,21 @@ Replace the placeholder review in the generated `.md` file with your professiona
 ```
 This regenerates the `*_SHARE.png` with the new coach review embedded.
 
-### Step 5: Cleanup
+### Step 5: Generate Xiaohongshu Post
+**IMMEDIATELY** after Step 4:
+1. Read the fully updated `.md` report (now including the professional coach review).
+2. Generate a social media post suitable for Xiaohongshu (Red Note) in Chinese.
+3. The post should include:
+    - **Catchy Title**: Use emojis and an engaging hook.
+    - **Key Stats**: Distance, Total Time, Average Pace, Stroke Rate.
+    - **Coach's "One Thing"**: A single, impactful piece of advice or encouragement from the review.
+    - **Tags**: Relevant hashtags (e.g., #赛艇 #Rowing #Concept2 #训练打卡).
+4. Append this content to the end of the `.md` file under a new header `## Social Media Post`.
+
+### Step 6: Cleanup
 Delete the temporary JSON analysis file after successful completion.
 
-> **IMPORTANT**: All five steps must be completed automatically in a single invocation.
+> **IMPORTANT**: All six steps must be completed automatically in a single invocation.
 
 ## Resources
 
