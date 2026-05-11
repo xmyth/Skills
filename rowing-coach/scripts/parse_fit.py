@@ -722,6 +722,7 @@ def find_segments_ruptures(records):
     timestamps = []
     speeds_raw = []
     cads_raw = []
+    hrs_raw = []
     
     start_dt = records[0]["dt"]
     
@@ -730,10 +731,12 @@ def find_segments_ruptures(records):
         timestamps.append(t_delta)
         speeds_raw.append(float(r.get("speed", 0) or 0))
         cads_raw.append(float(r.get("cadence", 0) or 0))
+        hrs_raw.append(float(r.get("heart_rate", 0) or 0))
         
     timestamps = np.array(timestamps)
     speeds_raw = np.array(speeds_raw)
     cads_raw = np.array(cads_raw)
+    hrs_raw = np.array(hrs_raw)
     
     # Create Uniform Grid (1Hz)
     if len(timestamps) < 2: return []
@@ -749,6 +752,7 @@ def find_segments_ruptures(records):
     # Interpolate onto grid
     s_interp = np.interp(t_grid, timestamps, speeds_raw)
     c_interp = np.interp(t_grid, timestamps, cads_raw)
+    h_interp = np.interp(t_grid, timestamps, hrs_raw)
     
     # 1.1 Zero-out gaps (Stops)
     # Find gaps in original data > 6 seconds (User requested 6s)
@@ -764,24 +768,33 @@ def find_segments_ruptures(records):
             mask = (t_grid > t_curr + 1.0) & (t_grid < t_next - 1.0)
             s_interp[mask] = 0.0
             c_interp[mask] = 0.0
+            h_interp[mask] = 0.0
 
     # Standardize (Z-score) on the UNIFORM data
     s_mean, s_std = np.mean(s_interp), np.std(s_interp)
     c_mean, c_std = np.mean(c_interp), np.std(c_interp)
+    h_mean, h_std = np.mean(h_interp), np.std(h_interp)
     
     s_std = s_std if s_std > 1e-6 else 1.0
     c_std = c_std if c_std > 1e-6 else 1.0
+    h_std = h_std if h_std > 1e-6 else 1.0
     
     s_norm = (s_interp - s_mean) / s_std
     c_norm = (c_interp - c_mean) / c_std
+    h_norm = (h_interp - h_mean) / h_std
     
-    # User requested removing HR from auto segmentation (Speed + Cadence only)
+    # Check if valid HR data is present
+    # We no longer put h_norm in the Pelt signal because it causes "cardiac lag"
+    # where the start of the work interval is grouped into the rest segment.
+    # Instead, we rely on speed/cadence to find the exact physical boundaries,
+    # and use the HR post-processing filter to keep only the ones with HR drops.
     signal = np.stack([s_norm, c_norm], axis=1)
 
     # 2. Apply Detection on Uniform Grid
-    # Penalty: User requested 25.
+    # Penalty: Lowered to 12 because we now have a strict post-processing filter 
+    # to reject noise, but we need it to be sensitive enough to detect light paddle rests.
     algo = rpt.Pelt(model="rbf").fit(signal)
-    penalty = 25
+    penalty = 12
     breakpoints_time = algo.predict(pen=penalty) # These are INDICES in t_grid, which map 1:1 to SECONDS
     
     # 3. Map Time Breakpoints back to Record Indices
@@ -800,14 +813,62 @@ def find_segments_ruptures(records):
             idx = len(records)
         breakpoints_indices.append(idx)
         
-    # Remove duplicates and sort (just in case)
+    raw_breakpoints = sorted(list(set(breakpoints_indices)))
+    breakpoints_indices = []
+    
+    # Filter breakpoints to reject gradual HR drift, keep only significant drops/recoveries or speed changes
+    for idx in raw_breakpoints:
+        if idx == 0 or idx == len(records):
+            breakpoints_indices.append(idx)
+            continue
+            
+        # TIME-BASED 30-second window before and after (not index-based)
+        # This prevents a small speed dip from "seeing" a large gap 30+ seconds later
+        t_idx = timestamps[idx]
+        
+        hr_before = []
+        spd_before = []
+        for j in range(idx - 1, -1, -1):
+            if t_idx - timestamps[j] > 30:
+                break
+            hr_val = float(records[j].get("heart_rate", 0) or 0)
+            if hr_val > 0:
+                hr_before.append(hr_val)
+            spd_before.append(float(records[j].get("speed_smooth", 0) or 0))
+        
+        hr_after = []
+        spd_after = []
+        for j in range(idx, len(records)):
+            if timestamps[j] - t_idx > 30:
+                break
+            hr_val = float(records[j].get("heart_rate", 0) or 0)
+            if hr_val > 0:
+                hr_after.append(hr_val)
+            spd_after.append(float(records[j].get("speed_smooth", 0) or 0))
+        
+        mean_hr_before = sum(hr_before) / len(hr_before) if hr_before else 0
+        mean_hr_after = sum(hr_after) / len(hr_after) if hr_after else 0
+        
+        mean_spd_before = sum(spd_before) / len(spd_before) if spd_before else 0
+        mean_spd_after = sum(spd_after) / len(spd_after) if spd_after else 0
+        
+        speed_changed = abs(mean_spd_after - mean_spd_before) > 0.8
+        hr_changed = abs(mean_hr_after - mean_hr_before) > 8.0  # Require sudden jump/drop of >8 bpm, ignoring gradual drift
+        
+        if speed_changed or hr_changed:
+            breakpoints_indices.append(idx)
+            
+    # Force breakpoints at actual hardware gaps / auto-pauses (> 8 seconds)
+    for i in range(1, len(records)):
+        if (timestamps[i] - timestamps[i-1]) > 8.0:
+            breakpoints_indices.append(i)
+            
     breakpoints_indices = sorted(list(set(breakpoints_indices)))
+            
     # Ensure end index is correct
-    if breakpoints_indices[-1] != len(records):
-        if breakpoints_indices[-1] < len(records):
-             breakpoints_indices.append(len(records))
-        else:
-             breakpoints_indices[-1] = len(records)
+    if not breakpoints_indices or breakpoints_indices[-1] != len(records):
+        breakpoints_indices.append(len(records))
+
     
     segments = []
     start_idx = 0
@@ -830,9 +891,10 @@ def find_segments_ruptures(records):
             duration_sec = (t1 - t0).total_seconds()
         except: pass
         
-        # Ignore extremely short segments (< 10s)
-        if duration_sec < 10: 
-             start_idx = end_idx # Skip
+        # For very short segments (< 5s or single record): don't discard, merge into next
+        # This preserves rest data points that would otherwise be lost
+        if duration_sec < 5 and len(seg_records) < 3:
+             # Don't advance start_idx — these records merge into the next segment
              continue
 
         # Prepare chunk for create_lap_from_records
@@ -857,9 +919,9 @@ def find_segments_ruptures(records):
         avg_s = l_dict.get("avg_speed", 0)
         avg_c = l_dict.get("avg_cadence", 0)
         
-        if avg_s > 2.0 and avg_c > 15:
+        if avg_s > 2.5 and avg_c > 14:
             l_dict["type"] = "Work"
-        elif avg_s < 1.0:
+        elif avg_s < 2.0 or duration_sec < 30:
             l_dict["type"] = "Rest"
         else:
             l_dict["type"] = "Active" # Recovery paddling
@@ -869,6 +931,110 @@ def find_segments_ruptures(records):
         segments.append(l_dict)
         lap_num += 1
         start_idx = end_idx
+    
+    # --- Post-processing: merge consecutive Rest/Active segments ---
+    merged = []
+    for seg in segments:
+        if merged and seg["type"] in ("Rest", "Active") and merged[-1]["type"] in ("Rest", "Active"):
+            # Merge into previous rest segment
+            prev = merged[-1]
+            prev["total_timer_time"] = (prev.get("total_timer_time") or 0) + (seg.get("total_timer_time") or 0)
+            prev["total_distance"] = (prev.get("total_distance") or 0) + (seg.get("total_distance") or 0)
+            # Keep the earlier start_time, update end_time
+            prev["end_time"] = seg.get("end_time") or seg.get("start_time")
+            # Recalculate avg_speed from merged distance/time
+            if prev["total_timer_time"] and prev["total_timer_time"] > 0:
+                prev["avg_speed"] = prev["total_distance"] / prev["total_timer_time"]
+            # Keep lower HR (rest trough)
+            prev_hr = prev.get("avg_heart_rate") or 0
+            seg_hr = seg.get("avg_heart_rate") or 0
+            if prev_hr and seg_hr:
+                prev["avg_heart_rate"] = min(prev_hr, seg_hr)
+            elif seg_hr:
+                prev["avg_heart_rate"] = seg_hr
+            # Reclassify merged segment
+            if prev["avg_speed"] < 1.0:
+                prev["type"] = "Rest"
+            else:
+                prev["type"] = "Active"
+            prev["phase"] = prev["type"]
+        else:
+            merged.append(seg)
+    segments = merged
+    
+    # --- Post-processing: absorb short Work segments (<60s) into adjacent Work ---
+    # This handles tiny fragment segments created by gap-detection + Pelt double-cuts.
+    MIN_WORK_DURATION = 60.0
+    changed = True
+    while changed:
+        changed = False
+        new_segments = []
+        i = 0
+        while i < len(segments):
+            seg = segments[i]
+            dur = seg.get("total_timer_time") or 0
+            if seg["type"] == "Work" and dur < MIN_WORK_DURATION:
+                # Find the best adjacent Work segment to merge into
+                prev_work = new_segments[-1] if new_segments and new_segments[-1]["type"] == "Work" else None
+                next_work = segments[i + 1] if (i + 1 < len(segments) and segments[i + 1]["type"] == "Work") else None
+                
+                target = None
+                if prev_work and next_work:
+                    # Merge into the one with closer avg_speed
+                    diff_prev = abs((prev_work.get("avg_speed") or 0) - (seg.get("avg_speed") or 0))
+                    diff_next = abs((next_work.get("avg_speed") or 0) - (seg.get("avg_speed") or 0))
+                    target = prev_work if diff_prev <= diff_next else None
+                    if target is None:
+                        # Merge into next — will be handled when we process next
+                        target = next_work
+                elif prev_work:
+                    target = prev_work
+                elif next_work:
+                    target = next_work
+                
+                if target is not None and target is prev_work:
+                    # Absorb into previous
+                    target["total_timer_time"] = (target.get("total_timer_time") or 0) + dur
+                    target["total_distance"] = (target.get("total_distance") or 0) + (seg.get("total_distance") or 0)
+                    target["end_time"] = seg.get("end_time") or seg.get("start_time")
+                    if target["total_timer_time"] > 0:
+                        target["avg_speed"] = target["total_distance"] / target["total_timer_time"]
+                    # Weighted HR average
+                    t_hr = target.get("avg_heart_rate") or 0
+                    s_hr = seg.get("avg_heart_rate") or 0
+                    t_dur = (target.get("total_timer_time") or 1) - dur
+                    if t_hr and s_hr and (t_dur + dur) > 0:
+                        target["avg_heart_rate"] = round((t_hr * t_dur + s_hr * dur) / (t_dur + dur))
+                    changed = True
+                    i += 1
+                    continue
+                elif target is not None and target is next_work:
+                    # Absorb into next — prepend current into next
+                    target["total_timer_time"] = (target.get("total_timer_time") or 0) + dur
+                    target["total_distance"] = (target.get("total_distance") or 0) + (seg.get("total_distance") or 0)
+                    target["start_time"] = seg.get("start_time") or target.get("start_time")
+                    if target["total_timer_time"] > 0:
+                        target["avg_speed"] = target["total_distance"] / target["total_timer_time"]
+                    t_hr = target.get("avg_heart_rate") or 0
+                    s_hr = seg.get("avg_heart_rate") or 0
+                    t_dur = (target.get("total_timer_time") or 1) - dur
+                    if t_hr and s_hr and (t_dur + dur) > 0:
+                        target["avg_heart_rate"] = round((t_hr * t_dur + s_hr * dur) / (t_dur + dur))
+                    changed = True
+                    i += 1
+                    continue
+            
+            new_segments.append(seg)
+            i += 1
+        segments = new_segments
+    
+    # --- Post-processing: trim trailing Rest segment ---
+    if segments and segments[-1]["type"] in ("Rest", "Active"):
+        segments.pop()
+    
+    # Re-number lap_number sequentially
+    for i, seg in enumerate(segments):
+        seg["lap_number"] = i + 1
         
     return segments
 
@@ -913,25 +1079,34 @@ def auto_segment(records):
             continue
             
         curr_speed = p["speed_smooth"]
+        curr_hr = float(p.get("heart_rate", 0) or 0)
         
         # Calculate stats of current segment so far
         seg_speeds = [x["speed_smooth"] for x in current_segment]
         seg_mean = sum(seg_speeds) / len(seg_speeds)
         
+        seg_hrs = [float(x.get("heart_rate", 0) or 0) for x in current_segment if float(x.get("heart_rate", 0) or 0) > 0]
+        seg_mean_hr = sum(seg_hrs) / len(seg_hrs) if seg_hrs else 0
+        
         # B. Time-Based Local Window
         # Find records within [curr_dt - WINDOW_SEC, curr_dt]
         # Since 'data' is sorted by time, we can look backwards from i
         local_speeds = []
+        local_hrs = []
         for j in range(i, -1, -1):
             rec = data[j]
             if (curr_dt - rec["dt"]).total_seconds() > WINDOW_SEC:
                 break
             local_speeds.append(rec["speed_smooth"])
+            hr_val = float(rec.get("heart_rate", 0) or 0)
+            if hr_val > 0: local_hrs.append(hr_val)
             
         if not local_speeds:
             local_mean = curr_speed
         else:
             local_mean = sum(local_speeds) / len(local_speeds)
+            
+        local_mean_hr = sum(local_hrs) / len(local_hrs) if local_hrs else curr_hr
         
         diff = abs(local_mean - seg_mean)
         
@@ -940,7 +1115,15 @@ def auto_segment(records):
         seg_duration = (current_segment[-1]["dt"] - current_segment[0]["dt"]).total_seconds()
         
         should_split = False
-        if diff > CHANGE_THRESH:
+        
+        # Check HR Drop
+        HR_DROP_THRESH = 10.0
+        hr_dropped = False
+        if seg_mean_hr > 60 and local_mean_hr > 0:
+             if (seg_mean_hr - local_mean_hr) > HR_DROP_THRESH:
+                 hr_dropped = True
+                 
+        if diff > CHANGE_THRESH or hr_dropped:
              if seg_duration > MIN_SEG_DURATION:
                  should_split = True
              elif is_stop and seg_duration > 20:
