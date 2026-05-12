@@ -3338,8 +3338,9 @@ def main():
         chart_buffer = generate_pacing_chart(analyzed_data, md_dir, f_prefix)
         
         if chart_buffer:
-            share_path = _save_chart_and_share(analyzed_data, chart_buffer, review_text, md_dir, f_prefix, custom_title=custom_header)
-            print(f"✅ Share image regenerated: {share_path}")
+            chart_path = _save_chart(analyzed_data, chart_buffer, md_dir, f_prefix)
+            if chart_path:
+                print(f"✅ Chart image regenerated: {chart_path}")
         else:
             print("⚠️ Could not generate chart (missing processed_records in JSON)")
 
@@ -3361,22 +3362,22 @@ def main():
         # Generate Report
         post_path, chart_buffer, review_text, image_title = generate_training_report(analyzed_data, args.file_path, args.max_hr, args.resting_hr)
         
-        share_path = None
+        chart_path = None
         if post_path and chart_buffer:
              md_dir = os.path.dirname(post_path)
              f_prefix = os.path.splitext(os.path.basename(post_path))[0]
-             share_path = _save_chart_and_share(analyzed_data, chart_buffer, review_text, md_dir, f_prefix, custom_title=image_title)
+             chart_path = _save_chart(analyzed_data, chart_buffer, md_dir, f_prefix)
 
         print(f"\n✅ Training analysis complete!")
         print(f"📝 Markdown: {post_path}")
-        if share_path:
-            print(f"🖼️ Share Image: {share_path}")
+        if chart_path:
+            print(f"🖼️ Chart Image: {chart_path}")
 
     else:
         sys.exit(1)
 
-def _save_chart_and_share(data, chart_buffer, review_text, output_dir, file_prefix, custom_title=None):
-    """Save chart image and generate share image. Returns share_path or None."""
+def _save_chart(data, chart_buffer, output_dir, file_prefix):
+    """Save combined chart image. Returns chart_path or None."""
     chart_filename = f"{file_prefix}.png"
     chart_path = os.path.join(output_dir, chart_filename)
     try:
@@ -3386,11 +3387,10 @@ def _save_chart_and_share(data, chart_buffer, review_text, output_dir, file_pref
             f.write(save_buf.getbuffer())
         print(f"✅ Chart image saved: {chart_path}")
         chart_buffer.seek(0)
+        return chart_path
     except Exception as e:
         print(f"⚠️ Could not save separate chart image: {e}")
-
-    share_path = generate_share_image(data, chart_buffer, review_text, output_dir, file_prefix, custom_title=custom_title)
-    return share_path
+        return None
 
 
 def generate_combined_chart_image(data, chart_buf):

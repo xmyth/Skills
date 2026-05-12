@@ -38,8 +38,8 @@ Requires Python 3.8+ and the following libraries:
 - `numpy`
 - `ruptures`
 - `geopy` (optional, for location data)
-- `Pillow` (optional, for share images)
-- `pilmoji` (optional, for emoji rendering)
+- `Pillow` (optional, for chart images)
+- `pilmoji` (optional, for emoji rendering in charts)
 
 ```bash
 pip install fitparse matplotlib pandas numpy ruptures geopy Pillow pilmoji
@@ -49,7 +49,7 @@ pip install fitparse matplotlib pandas numpy ruptures geopy Pillow pilmoji
 
 This skill is designed to work seamlessly with the **Antigravity** agentic assistant. It leverages task management and professional coaching guidelines to provide a comprehensive training review.
 
-### Automatic 6-Step Workflow
+### Automatic 5-Step Workflow
 Simply drag and drop your `.fit` file into the Antigravity chat and ask for an analysis:
 
 > **User**: "Analyze this rowing FIT file."
@@ -58,13 +58,12 @@ Antigravity will automatically:
 1. **Parse FIT file** → Extract data and generate `ROW_*.json` or `ERG_*.json`
 2. **Generate coach review** → Read JSON and apply `coach_guidelines.md` criteria
 3. **Update report** → Replace placeholder with professional English feedback
-4. **Regenerate share image** → Create `*_SHARE.png` with embedded review
-5. **Generate social post** → Append Xiaohongshu-ready Chinese social media content
-6. **Cleanup** → Remove temporary artifacts
+4. **Generate social post** → Append Xiaohongshu-ready Chinese social media content
+5. **Cleanup** → Remove temporary artifacts
 
 ### Output Files
 - `ROW_*.md` or `ERG_*.md` - Complete training report with coach review
-- `*_SHARE.png` - Social media share image
+- `ROW_*.png` or `ERG_*.png` - Pacing chart image
 
 ## Technical CLI Usage (Advanced)
 For developers or offline processing:
@@ -114,11 +113,6 @@ The stroke rate was maintained very low (**16-18spm**) throughout, with heart ra
 #### 💡 Next Session Advice
 *   **Focus from Stroke 1**: Try to focus on **Catch** and **Connection** from the very first stroke. Aim for 10m+ DPS even during warm-up.
 *   **Seek Consistency**: At low rates, feel the "Run" of the boat after the finish. Make the force curve of every stroke full and complete.
-
-### Share Image
-The skill also generates a social media share image with all metrics and coach review embedded:
-
-![Share Image Example](assets/example_share.png)
 
 ## License
 MIT

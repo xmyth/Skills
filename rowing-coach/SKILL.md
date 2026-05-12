@@ -21,7 +21,7 @@ python3 scripts/parse_fit.py <path_to_fit_file>
 **Outputs**:
 - `ROW_*.json` / `ERG_*.json` - Structured data for analysis
 - `ROW_<timestamp>.md` or `ERG_<timestamp>.md` - Initial report with placeholder review
-- `*_SHARE.png` - Social media image
+- `ROW_<timestamp>.png` or `ERG_<timestamp>.png` - Pacing chart image
 
 ### Step 2: Generate Professional Coach Review
 **IMMEDIATELY** after Step 1:
@@ -36,13 +36,7 @@ python3 scripts/parse_fit.py <path_to_fit_file>
 ### Step 3: Update Report
 Replace the placeholder review in the generated `.md` file with your professional analysis.
 
-### Step 4: Regenerate Share Image
-```bash
-python3 scripts/parse_fit.py --regen-share <path_to_updated_md>
-```
-This regenerates the `*_SHARE.png` with the new coach review embedded.
-
-### Step 5: Generate Xiaohongshu Post
+### Step 4: Generate Xiaohongshu Post
 **IMMEDIATELY** after Step 4:
 1. Read the fully updated `.md` report (now including the professional coach review).
 2. Generate a social media post suitable for Xiaohongshu (Red Note) in Chinese.
@@ -53,10 +47,10 @@ This regenerates the `*_SHARE.png` with the new coach review embedded.
     - **Tags**: Relevant hashtags (e.g., #赛艇 #Rowing #Concept2 #训练打卡).
 4. Append this content to the end of the `.md` file under a new header `## Social Media Post`.
 
-### Step 6: Cleanup
+### Step 5: Cleanup
 Remove any temporary artifacts. The JSON analysis file is preserved to support `--regen-share` regeneration.
 
-> **IMPORTANT**: All six steps must be completed automatically in a single invocation.
+> **IMPORTANT**: All five steps must be completed automatically in a single invocation.
 
 ## Adaptive Segmentation Algorithm
 
