@@ -3235,6 +3235,7 @@ def main():
     parser.add_argument("--max-hr", type=int, default=MAX_HR, help="Maximum Heart Rate")
     parser.add_argument("--resting-hr", type=int, default=RESTING_HR, help="Resting Heart Rate")
     parser.add_argument("--regen-share", metavar="MD_FILE", help="Regenerate share image from existing markdown report")
+    parser.add_argument("--regen-xhs", metavar="MD_FILE", help="Regenerate XHS image from existing markdown report")
     
     args = parser.parse_args()
 
@@ -3346,6 +3347,50 @@ def main():
 
         sys.exit(0)
 
+    # Mode: Regenerate XHS image from existing report
+    if args.regen_xhs:
+        md_path = args.regen_xhs
+        if not os.path.exists(md_path):
+            print(f"Error: Markdown file not found: {md_path}")
+            sys.exit(1)
+
+        md_dir = os.path.dirname(md_path) or "."
+        md_base = os.path.basename(md_path)
+
+        match = re.search(r'(\d{8})_(\d{4})', md_base)
+        if not match:
+            print(f"Error: Cannot extract timestamp from filename: {md_base}")
+            sys.exit(1)
+        ts_prefix = match.group(0)
+
+        json_path = None
+        for f in os.listdir(md_dir):
+            if ts_prefix in f and f.endswith('.json') and (f.startswith('ERG_') or f.startswith('ROW_')):
+                json_path = os.path.join(md_dir, f)
+                break
+        if not json_path or not os.path.exists(json_path):
+            print(f"Error: Cannot find JSON file for timestamp {ts_prefix}")
+            sys.exit(1)
+
+        with open(json_path) as f:
+            analyzed_data = json.load(f)
+
+        for r in analyzed_data.get("processed_records", []):
+            if isinstance(r.get("dt"), str):
+                r["dt"] = datetime.datetime.fromisoformat(r["dt"])
+
+        f_prefix = os.path.splitext(md_base)[0]
+        chart_buffer = generate_pacing_chart(analyzed_data, md_dir, f_prefix)
+
+        if chart_buffer:
+            xhs_path = generate_xhs_image(analyzed_data, chart_buffer, md_dir, f_prefix)
+            if xhs_path:
+                print(f"✅ XHS image regenerated: {xhs_path}")
+        else:
+            print("⚠️ Could not generate chart")
+
+        sys.exit(0)
+
     # Normal mode: Parse FIT file
     if not args.file_path:
         parser.error("file_path is required unless using --regen-share")
@@ -3363,15 +3408,20 @@ def main():
         post_path, chart_buffer, review_text, image_title = generate_training_report(analyzed_data, args.file_path, args.max_hr, args.resting_hr)
         
         chart_path = None
+        xhs_path = None
         if post_path and chart_buffer:
              md_dir = os.path.dirname(post_path)
              f_prefix = os.path.splitext(os.path.basename(post_path))[0]
              chart_path = _save_chart(analyzed_data, chart_buffer, md_dir, f_prefix)
+             chart_buffer.seek(0)
+             xhs_path = generate_xhs_image(analyzed_data, chart_buffer, md_dir, f_prefix)
 
         print(f"\n✅ Training analysis complete!")
         print(f"📝 Markdown: {post_path}")
         if chart_path:
             print(f"🖼️ Chart Image: {chart_path}")
+        if xhs_path:
+            print(f"📱 XHS Image: {xhs_path}")
 
     else:
         sys.exit(1)
@@ -3391,6 +3441,268 @@ def _save_chart(data, chart_buffer, output_dir, file_prefix):
     except Exception as e:
         print(f"⚠️ Could not save separate chart image: {e}")
         return None
+
+
+def _load_font(candidates, size):
+    """Try font candidates in order, return first that works."""
+    for path in candidates:
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+def _draw_gradient(draw, width, height, top_color, mid_color, bot_color):
+    """Draw vertical three-stop gradient."""
+    for y in range(height):
+        if y < height * 0.3:
+            t = y / (height * 0.3)
+            r = int(top_color[0] + (mid_color[0] - top_color[0]) * t)
+            g = int(top_color[1] + (mid_color[1] - top_color[1]) * t)
+            b = int(top_color[2] + (mid_color[2] - top_color[2]) * t)
+        else:
+            t = (y - height * 0.3) / (height * 0.7)
+            r = int(mid_color[0] + (bot_color[0] - mid_color[0]) * t)
+            g = int(mid_color[1] + (bot_color[1] - mid_color[1]) * t)
+            b = int(mid_color[2] + (bot_color[2] - mid_color[2]) * t)
+        draw.line([(0, y), (width, y)], fill=(r, g, b))
+
+def generate_xhs_image(data, chart_buffer, output_dir, file_prefix):
+    """
+    Generate a Xiaohongshu-optimized training image.
+    1080x1440px portrait, dark gradient background, Chinese labels.
+    Layout: Hero -> Secondary Metrics -> Combined Chart -> Segment Table -> Footer
+    """
+    if not PIL_AVAILABLE:
+        print("Warning: Pillow not installed. Skipping XHS image generation.")
+        return None
+
+    chart_img = None
+    if chart_buffer:
+        try:
+            chart_img = Image.open(chart_buffer)
+        except Exception as e:
+            print(f"Error loading chart from buffer: {e}")
+
+    # --- CONFIG ---
+    img_width = 1080
+    bg_gradient_top = (10, 22, 40)
+    bg_gradient_mid = (26, 42, 74)
+    bg_gradient_bot = (15, 32, 64)
+    accent_cyan = (91, 192, 190)
+    gold_dark = (244, 162, 97)
+    chart_blue = (31, 119, 180)
+    chart_orange = (255, 127, 14)
+    chart_red = (214, 39, 40)
+    text_white = (232, 236, 241)
+    text_muted = (136, 153, 170)
+    text_dim = (85, 102, 119)
+    card_bg = (255, 255, 255, 13)
+    card_border = (255, 255, 255, 20)
+    padding = 28
+
+    # --- FONTS ---
+    font_candidates = [
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/Library/Fonts/Arial Unicode.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+    ]
+    load_font = lambda size: _load_font(font_candidates, size)
+
+    font_hero_num = load_font(64)
+    font_hero_unit = load_font(24)
+    font_hero_label = load_font(18)
+    font_title = load_font(28)
+    font_date = load_font(20)
+    font_section = load_font(22)
+    font_metric_val = load_font(28)
+    font_metric_lbl = load_font(16)
+    font_table_hdr = load_font(14)
+    font_table_body = load_font(15)
+    font_footer = load_font(18)
+
+    # Compute session info
+    session = data.get("session", {})
+    laps = data.get("laps", [])
+    is_indoor = session.get("sub_sport") == "indoor_rowing"
+    type_label = "🏋 室内划船" if is_indoor else "🛶 水上训练"
+
+    start_t = session.get("start_time")
+    date_str = ""
+    if start_t:
+        try:
+            if isinstance(start_t, str):
+                dt = datetime.datetime.fromisoformat(start_t)
+            else:
+                dt = start_t
+            dt = dt + datetime.timedelta(hours=8)
+            weekday = ["一","二","三","四","五","六","日"][dt.weekday()]
+            hour = dt.hour
+            tod = "清晨" if 5 <= hour < 9 else ("上午" if 9 <= hour < 12 else ("下午" if 12 <= hour < 18 else "晚间"))
+            date_str = f"{dt.year}年{dt.month}月{dt.day}日 · 星期{weekday} · {tod}"
+        except:
+            pass
+
+    # Metrics
+    work_laps = [l for l in laps if l.get("type") != "Rest"]
+    total_dist = sum(float(l.get("total_distance", 0)) for l in laps) / 1000
+    total_time = sum(float(l.get("total_timer_time", 0)) for l in laps) / 60
+    avg_pace_sec = 0
+    if work_laps:
+        speeds = [float(l.get("avg_speed", 0)) for l in work_laps if float(l.get("avg_speed", 0)) > 0.5]
+        if speeds:
+            avg_pace_sec = 500 / (sum(speeds) / len(speeds))
+    pace_str = f"{int(avg_pace_sec // 60)}:{int(avg_pace_sec % 60):02d}" if avg_pace_sec > 0 else "--:--"
+
+    total_spm = 0; total_hr = 0; total_dps = 0; count = 0
+    for l in laps:
+        spm = float(l.get("avg_cadence", 0))
+        hr = float(l.get("avg_heart_rate", 0))
+        spd = float(l.get("avg_speed", 0))
+        if spm > 0:
+            total_spm += spm
+            if spd > 0.5: total_dps += spd / (spm / 60)
+            if hr > 0: total_hr += hr
+            count += 1
+    avg_spm = total_spm / count if count > 0 else 0
+    avg_hr = total_hr / count if count > 0 else 0
+    avg_dps = total_dps / count if count > 0 else 0
+
+    # --- BLOCK 1: Hero (280px) ---
+    hero_height = 280
+    hero = Image.new("RGBA", (img_width, hero_height))
+    hdraw = ImageDraw.Draw(hero)
+    _draw_gradient(hdraw, img_width, hero_height, bg_gradient_top, bg_gradient_mid, bg_gradient_bot)
+
+    with Pilmoji(hero) as p:
+        p.text((img_width//2, 40), type_label, fill=accent_cyan, font=font_title, anchor="ma")
+    hdraw.text((img_width//2, 75), date_str, fill=text_muted, font=font_date, anchor="ma")
+
+    col_centers = [int(img_width * 0.21), int(img_width * 0.5), int(img_width * 0.79)]
+    hero_labels = ["距离", "用时", "平均配速"]
+
+    hdraw.text((col_centers[0], 160), f"{total_dist:.1f}", fill=gold_dark, font=font_hero_num, anchor="ma")
+    hdraw.text((col_centers[0], 195), "km", fill=gold_dark, font=font_hero_unit, anchor="ma")
+    hdraw.text((col_centers[0], 220), hero_labels[0], fill=text_muted, font=font_hero_label, anchor="ma")
+
+    hdraw.text((col_centers[1], 160), f"{total_time:.0f}", fill=gold_dark, font=font_hero_num, anchor="ma")
+    hdraw.text((col_centers[1], 195), "min", fill=gold_dark, font=font_hero_unit, anchor="ma")
+    hdraw.text((col_centers[1], 220), hero_labels[1], fill=text_muted, font=font_hero_label, anchor="ma")
+
+    hdraw.text((col_centers[2], 160), pace_str, fill=accent_cyan, font=font_hero_num, anchor="ma")
+    hdraw.text((col_centers[2], 195), "/500m", fill=accent_cyan, font=font_hero_unit, anchor="ma")
+    hdraw.text((col_centers[2], 220), hero_labels[2], fill=text_muted, font=font_hero_label, anchor="ma")
+
+    # --- BLOCK 2: Secondary Metrics (100px) ---
+    metrics_height = 100
+    metrics_card = Image.new("RGBA", (img_width - 2 * padding, metrics_height))
+    mdraw = ImageDraw.Draw(metrics_card)
+    mdraw.rounded_rectangle([(0, 0), (img_width - 2*padding, metrics_height)], radius=14, fill=card_bg, outline=card_border, width=1)
+
+    metric_labels = ["桨频 /min", "心率 bpm", "DPS m/桨"]
+    metric_vals = [f"{avg_spm:.1f}", f"{avg_hr:.0f}", f"{avg_dps:.1f}"]
+    for i in range(3):
+        cx = (img_width - 2*padding) * (0.17 + i * 0.33)
+        mdraw.text((cx, 22), metric_vals[i], fill=text_white, font=font_metric_val, anchor="ma")
+        mdraw.text((cx, 60), metric_labels[i], fill=text_muted, font=font_metric_lbl, anchor="ma")
+
+    # --- BLOCK 3: Combined Chart (580px) ---
+    chart_height = 580
+    chart_block = Image.new("RGBA", (img_width - 2 * padding, chart_height))
+    cdraw = ImageDraw.Draw(chart_block)
+    cdraw.rounded_rectangle([(0, 0), (img_width - 2*padding, chart_height)], radius=14, fill=card_bg, outline=card_border, width=1)
+    cdraw.text(((img_width - 2*padding)//2, 16), "📊 配速 · 桨频 · 心率", fill=text_muted, font=font_section, anchor="ma")
+
+    if chart_img:
+        chart_aspect = chart_img.height / chart_img.width
+        chart_w = img_width - 2 * padding - 24
+        chart_h = int(chart_w * chart_aspect)
+        chart_resized = chart_img.resize((chart_w, min(chart_h, chart_height - 120)), Image.LANCZOS)
+        chart_block.paste(chart_resized, (12, 50), chart_resized if chart_resized.mode == "RGBA" else None)
+
+        lx = (img_width - 2*padding) // 2
+        cdraw.text((lx - 120, chart_height - 50), "━ 配速", fill=chart_blue, font=font_metric_lbl, anchor="rm")
+        cdraw.text((lx, chart_height - 50), "━ 桨频", fill=chart_orange, font=font_metric_lbl, anchor="mm")
+        cdraw.text((lx + 120, chart_height - 50), "━ 心率", fill=chart_red, font=font_metric_lbl, anchor="lm")
+
+    # --- BLOCK 4: Segment Table ---
+    show_laps = [l for l in laps if l.get("type") != "Rest" and float(l.get("total_distance", 0)) > 50]
+    if not show_laps:
+        show_laps = [l for l in laps if float(l.get("total_distance", 0)) > 50]
+    table_row_h = 48
+    table_header_h = 36
+    table_height = table_header_h + len(show_laps) * table_row_h + 20
+
+    table_block = Image.new("RGBA", (img_width - 2 * padding, table_height))
+    tdraw = ImageDraw.Draw(table_block)
+    tdraw.rounded_rectangle([(0, 0), (img_width - 2*padding, table_height)], radius=14, fill=card_bg, outline=card_border, width=1)
+    tdraw.text(((img_width - 2*padding)//2, 12), "📋 分段详情", fill=accent_cyan, font=font_section, anchor="ma")
+
+    cols = [
+        ("#", 0.04), ("时间", 0.18), ("距离", 0.18), ("配速", 0.18),
+        ("桨频", 0.14), ("心率", 0.14), ("DPS", 0.14)
+    ]
+    col_x = [int((img_width - 2*padding) * sum(c[1] for c in cols[:j])) for j in range(len(cols))]
+
+    header_y = 42
+    for j, (label, _) in enumerate(cols):
+        tdraw.text((col_x[j], header_y), label, fill=text_dim, font=font_table_hdr, anchor="lm")
+
+    for i, lap in enumerate(show_laps):
+        row_y = header_y + 28 + i * table_row_h
+        hr_val = float(lap.get("avg_heart_rate", 0))
+        spm_val = float(lap.get("avg_cadence", 0))
+        zone = classify_training_zone(hr_val, spm_val)
+        is_hot = zone in ("AT", "TR", "AN")
+        row_color = (255, 200, 140) if is_hot else (200, 214, 229)
+
+        time_sec = float(lap.get("total_timer_time", 0))
+        dist_m = float(lap.get("total_distance", 0))
+        pace = lap.get("avg_500m_split", "--:--")
+        spm = f"{float(lap.get('avg_cadence', 0)):.0f}"
+        hr = f"{float(lap.get('avg_heart_rate', 0)):.0f}"
+        spd = float(lap.get("avg_speed", 0))
+        cad = float(lap.get("avg_cadence", 0))
+        dps = f"{spd / (cad / 60):.1f}" if cad > 0 and spd > 0.5 else "-"
+        time_str = f"{int(time_sec // 60)}:{int(time_sec % 60):02d}"
+        dist_str = f"{dist_m / 1000:.2f}k"
+
+        row_data = [str(i + 1), time_str, dist_str, pace, spm, hr, dps]
+        for j, val in enumerate(row_data):
+            tdraw.text((col_x[j], row_y + 6), val, fill=row_color, font=font_table_body, anchor="lm")
+
+    # --- BLOCK 5: Footer (80px) ---
+    footer_height = 80
+    footer = Image.new("RGBA", (img_width, footer_height))
+    fdraw = ImageDraw.Draw(footer)
+    _draw_gradient(fdraw, img_width, footer_height, bg_gradient_bot, bg_gradient_bot, bg_gradient_bot)
+    fdraw.text((img_width//2, 30), "#赛艇 #rowing #水上训练 #每日打卡", fill=text_dim, font=font_footer, anchor="ma")
+
+    # --- ASSEMBLE ---
+    gap = 12
+    total_height = hero_height + metrics_height + chart_height + table_height + footer_height + 5 * gap
+    final_img = Image.new("RGB", (img_width, total_height))
+    fdraw = ImageDraw.Draw(final_img)
+    _draw_gradient(fdraw, img_width, total_height, bg_gradient_top, bg_gradient_mid, bg_gradient_bot)
+
+    y = 0
+    final_img.paste(hero, (0, y), hero)
+    y += hero_height + gap
+    final_img.paste(metrics_card, (padding, y), metrics_card)
+    y += metrics_height + gap
+    final_img.paste(chart_block, (padding, y), chart_block)
+    y += chart_height + gap
+    final_img.paste(table_block, (padding, y), table_block)
+    y += table_height + gap
+    final_img.paste(footer, (0, total_height - footer_height), footer)
+
+    xhs_path = os.path.join(output_dir, f"{file_prefix}_XHS.png")
+    final_img.save(xhs_path)
+    return xhs_path
 
 
 def generate_combined_chart_image(data, chart_buf):
