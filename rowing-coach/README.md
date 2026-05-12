@@ -5,7 +5,7 @@ Professional rowing coach assistant that analyzes FIT files and generates detail
 ## Features
 
 - **Multi-Source Support**: Compatible with FIT files from SpdCoach (on-water), Garmin, and Concept2 (indoor ERG).
-- **Strategy C (Smart Segmentation)**: Uses 5-point smoothing and Change Point Detection (CPD) to accurately split training sessions into meaningful segments.
+- **Adaptive Segmentation**: Uses HR Valley detection with multi-layered fallbacks (Ruptures CPD, time-based) to accurately split training sessions into meaningful segments.
 - **Deep Technical Analysis**:
     - **DPS (Distance Per Stroke)**: Evaluates technical efficiency against professional benchmarks.
     - **Pacing Strategy**: Identifies patterns like "Negative Splits" and power consistency.
@@ -35,17 +35,21 @@ Requires Python 3.8+ and the following libraries:
 - `fitparse`
 - `matplotlib`
 - `pandas`
+- `numpy`
+- `ruptures`
 - `geopy` (optional, for location data)
+- `Pillow` (optional, for share images)
+- `pilmoji` (optional, for emoji rendering)
 
 ```bash
-pip install fitparse matplotlib pandas geopy
+pip install fitparse matplotlib pandas numpy ruptures geopy Pillow pilmoji
 ```
 
 ## Usage in Antigravity Assistant
 
 This skill is designed to work seamlessly with the **Antigravity** agentic assistant. It leverages task management and professional coaching guidelines to provide a comprehensive training review.
 
-### Automatic 5-Step Workflow
+### Automatic 6-Step Workflow
 Simply drag and drop your `.fit` file into the Antigravity chat and ask for an analysis:
 
 > **User**: "Analyze this rowing FIT file."
@@ -55,7 +59,8 @@ Antigravity will automatically:
 2. **Generate coach review** → Read JSON and apply `coach_guidelines.md` criteria
 3. **Update report** → Replace placeholder with professional English feedback
 4. **Regenerate share image** → Create `*_SHARE.png` with embedded review
-5. **Cleanup** → Delete temporary JSON file
+5. **Generate social post** → Append Xiaohongshu-ready Chinese social media content
+6. **Cleanup** → Remove temporary artifacts
 
 ### Output Files
 - `ROW_*.md` or `ERG_*.md` - Complete training report with coach review

@@ -15,6 +15,7 @@ import json
 import datetime
 import os
 import io
+import re
 
 
 try:
@@ -25,7 +26,6 @@ except ImportError:
 
 try:
     import matplotlib.pyplot as plt
-    import matplotlib.dates as mdates
     import pandas as pd
     import numpy as np
     MATPLOTLIB_AVAILABLE = True
@@ -158,7 +158,7 @@ def parse_fit(file_path):
         session_data = {}
         for data_point in record:
             if data_point.name in [
-                "total_timer_time", "total_distance", "total_calories", 
+                "total_timer_time", "total_elapsed_time", "total_distance", "total_calories",
                 "avg_speed", "max_speed", "avg_heart_rate", "max_heart_rate",
                 "avg_cadence", "max_cadence", "total_strokes", "sport", "sub_sport",
                 "start_time", "avg_power", "max_power", "total_ascent", "total_descent",
@@ -391,10 +391,7 @@ def analyze_rowing(data, max_hr=190, resting_hr=60):
     # 500m Split calculation for Session
     avg_speed = session.get("avg_speed")
     session["avg_500m_split"] = calculate_split(avg_speed)
-    
-    # Pre-parse record timestamps for efficiency
 
-    
     parsed_records = []
     for r in records:
         ts_str = r.get("timestamp")
@@ -1300,23 +1297,6 @@ def _sec_to_idx(timestamps, center_idx, seconds):
     return max(1, int(seconds * rate))
 
 
-def _time_window(timestamps, center_idx, window_sec):
-    """Return (start_idx, end_idx) spanning ±window_sec around center_idx."""
-    n = len(timestamps)
-    dt = timestamps[center_idx]
-    lo = max(0, center_idx - _sec_to_idx(timestamps, center_idx, window_sec))
-    hi = min(n, center_idx + _sec_to_idx(timestamps, center_idx, window_sec))
-    # Tighten to actual time bounds
-    import datetime
-    lo_dt = dt - datetime.timedelta(seconds=window_sec)
-    hi_dt = dt + datetime.timedelta(seconds=window_sec)
-    while lo < center_idx and timestamps[lo] < lo_dt:
-        lo += 1
-    while hi > center_idx and timestamps[hi-1] > hi_dt:
-        hi -= 1
-    return lo, hi
-
-
 def _build_segment(records, start_idx, end_idx, lap_num, seg_type):
     """Create a lap dict from record slice. Returns None if too small."""
     if end_idx <= start_idx or end_idx > len(records):
@@ -1893,13 +1873,12 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
     analysis_summary = {
         "session_info": {
             "total_distance_km": session.get("total_distance", 0) / 1000,
-            "total_time_min": session.get("total_timer_time", 0) / 60,
+            "total_time_min": session.get("total_elapsed_time", 0) / 60,
             "start_time": session.get("start_time", ""),
-            "location": data.get("location", "Unknown")
+            "location": data.get("location_name", "Unknown")
         },
         "aggregated_metrics": {
             "avg_dps": round(avg_dps, 1),
-            "avg_pace_per_500m": round(avg_pace, 1),
             "avg_pace_per_500m": round(avg_pace, 1),
             "avg_cadence": round(avg_cadence, 1),
             "avg_heart_rate": int(avg_hr_weighted),
@@ -1915,7 +1894,7 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
                 "avg_cadence": l.get("avg_cadence", 0),
                 "avg_heart_rate": l.get("avg_heart_rate", 0),
                 "dps": round(l.get("avg_speed", 0) / (l.get("avg_cadence", 0) / 60), 1) if l.get("avg_cadence", 0) > 0 else "N/A",
-                "type": l.get("segment_type") or l.get("type") or "Unknown"
+                "type": l.get("type") or "Unknown"
             }
             for i, l in enumerate(laps)
         ],
@@ -2795,7 +2774,6 @@ def generate_share_image(data, chart_buffer, review_text, output_dir, file_prefi
         # split it character by character.
         
         # Simple comprehensive split that preserves existing spaces but allows splitting CJK
-        import re
         # This regex matches: spaces, OR non-ascii characters (CJK), OR normal words
         # patterns: \s+, [^\x00-\x7F], \S+
         # But keeping it simple: just iterate chars if it's mostly non-ascii?
@@ -2963,11 +2941,8 @@ def generate_share_image(data, chart_buffer, review_text, output_dir, file_prefi
     final_img.save(share_path)
     return share_path
 
-def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, forced_review=None):
-    """
-    Generates a Markdown training report.
-    If forced_review is provided, it uses that text instead of extracting from existing file or generating placeholder.
-    """
+def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val):
+    """Generates a Markdown training report."""
     session = data.get("session", {})
     laps = data.get("laps", [])
 
@@ -3002,10 +2977,6 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, 
        prefix = "ROW" 
 
     # 2. Determine Timestamp
-    # 2. Determine Timestamp
-    # Ensure datetime is imported if not at top level, though it should be.
-    import datetime 
-    
     start_t = session.get("start_time")
     file_time_str = "UNKNOWN_DATE"
     if start_t:
@@ -3050,9 +3021,8 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, 
                      # Start after header + whitespace
                      sub_start = s_idx + len(header_str)
                      sub = content[sub_start:].lstrip()
-                     
+
                      # Look for next section header or horizontal rule
-                     import re
                      match = re.search(r'\n(## |---)' , sub)
                      if match:
                          existing_review = sub[:match.start()].strip()
@@ -3060,9 +3030,6 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, 
                          # No next header or rule, take until end of file
                          existing_review = sub.strip()
                      
-                     # Check if it is valid (not placeholder)
-                     if existing_review and "Waiting for Analysis" in existing_review:
-                         existing_review = None
          except Exception:
              pass
     # --------------------------------------
@@ -3246,12 +3213,8 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val, 
             f.write("\n---\n")
         f.write("## Coach Review\n\n")
         
-        # Expert System Review
-        if forced_review:
-             f.write(forced_review + "\n\n")
-             print(f"Using provided Coach Review via CLI arguments.", file=sys.stderr)
-             final_review = forced_review
-        elif existing_review:
+        # Preserve existing review or generate placeholder
+        if existing_review:
              f.write(existing_review + "\n\n")
              print(f"Preserved existing Coach Review for {output_filename}", file=sys.stderr)
              final_review = existing_review
@@ -3287,7 +3250,6 @@ def main():
         md_base = os.path.basename(md_path)
         
         # Extract timestamp from filename (e.g., ERG_20260120_2117.md -> 20260120)
-        import re
         match = re.search(r'(\d{8})_(\d{4})', md_base)
         if not match:
             print(f"Error: Cannot extract timestamp from filename: {md_base}")
@@ -3335,9 +3297,7 @@ def main():
         review_start = md_content.find("## 👨‍🏫 Coach Review")
         if review_start == -1:
             review_start = md_content.find("## Coach Review")
-            if review_start == -1:
-                pass # Legacy Chinese header support removed for consistency
-        
+
         review_text = ""
         if review_start != -1:
             review_section = md_content[review_start:]
@@ -3377,29 +3337,12 @@ def main():
         f_prefix = os.path.splitext(md_base)[0]
         chart_buffer = generate_pacing_chart(analyzed_data, md_dir, f_prefix)
         
-        # Save Chart Image Separately
         if chart_buffer:
-            chart_filename = f"{f_prefix}.png"
-            chart_path = os.path.join(md_dir, chart_filename)
-            try:
-                # Use combined generated image
-                combo_buffer = generate_combined_chart_image(analyzed_data, chart_buffer)
-                save_buf = combo_buffer if combo_buffer else chart_buffer
-                
-                with open(chart_path, "wb") as f:
-                    f.write(save_buf.getbuffer())
-                print(f"✅ Chart image saved: {chart_path}")
-                chart_buffer.seek(0) # Reset buffer for share image generation
-            except Exception as e:
-                print(f"⚠️ Could not save separate chart image: {e}")
-
-        # Generate share image
-        if chart_buffer:
-            share_path = generate_share_image(analyzed_data, chart_buffer, review_text, md_dir, f_prefix, custom_title=custom_header)
+            share_path = _save_chart_and_share(analyzed_data, chart_buffer, review_text, md_dir, f_prefix, custom_title=custom_header)
             print(f"✅ Share image regenerated: {share_path}")
         else:
             print("⚠️ Could not generate chart (missing processed_records in JSON)")
-        
+
         sys.exit(0)
 
     # Normal mode: Parse FIT file
@@ -3418,32 +3361,11 @@ def main():
         # Generate Report
         post_path, chart_buffer, review_text, image_title = generate_training_report(analyzed_data, args.file_path, args.max_hr, args.resting_hr)
         
-        # Convert chart_buffer to separate image file if available
-        if post_path and chart_buffer:
-             md_dir = os.path.dirname(post_path)
-             md_name = os.path.basename(post_path)
-             f_prefix = os.path.splitext(md_name)[0]
-             
-             chart_filename = f"{f_prefix}.png"
-             chart_path = os.path.join(md_dir, chart_filename)
-             try:
-                # Use combined generated image
-                combo_buffer = generate_combined_chart_image(analyzed_data, chart_buffer)
-                save_buf = combo_buffer if combo_buffer else chart_buffer
-                
-                with open(chart_path, "wb") as f:
-                    f.write(save_buf.getbuffer())
-                print(f"✅ Chart image saved: {chart_path}")
-                chart_buffer.seek(0) # Reset buffer
-             except Exception as e:
-                print(f"⚠️ Could not save separate chart image: {e}")
-
-        # Generate Share Image
         share_path = None
         if post_path and chart_buffer:
-             md_name = os.path.basename(post_path)
-             f_prefix = os.path.splitext(md_name)[0]
-             share_path = generate_share_image(analyzed_data, chart_buffer, review_text, os.path.dirname(post_path), f_prefix, custom_title=image_title)
+             md_dir = os.path.dirname(post_path)
+             f_prefix = os.path.splitext(os.path.basename(post_path))[0]
+             share_path = _save_chart_and_share(analyzed_data, chart_buffer, review_text, md_dir, f_prefix, custom_title=image_title)
 
         print(f"\n✅ Training analysis complete!")
         print(f"📝 Markdown: {post_path}")
@@ -3453,15 +3375,30 @@ def main():
     else:
         sys.exit(1)
 
+def _save_chart_and_share(data, chart_buffer, review_text, output_dir, file_prefix, custom_title=None):
+    """Save chart image and generate share image. Returns share_path or None."""
+    chart_filename = f"{file_prefix}.png"
+    chart_path = os.path.join(output_dir, chart_filename)
+    try:
+        combo_buffer = generate_combined_chart_image(data, chart_buffer)
+        save_buf = combo_buffer if combo_buffer else chart_buffer
+        with open(chart_path, "wb") as f:
+            f.write(save_buf.getbuffer())
+        print(f"✅ Chart image saved: {chart_path}")
+        chart_buffer.seek(0)
+    except Exception as e:
+        print(f"⚠️ Could not save separate chart image: {e}")
+
+    share_path = generate_share_image(data, chart_buffer, review_text, output_dir, file_prefix, custom_title=custom_title)
+    return share_path
+
+
 def generate_combined_chart_image(data, chart_buf):
     """
     Combines the pacing chart (from buffer) with a segments table.
     Styled similar to the share image segments table.
     Returns a bytes buffer of the PNG image.
     """
-    from PIL import Image, ImageDraw, ImageFont
-    from pilmoji import Pilmoji
-    
     # 1. Load Chart
     chart_buf.seek(0)
     try:
@@ -3563,7 +3500,6 @@ def generate_combined_chart_image(data, chart_buf):
     subtitle_parts.append(s_type)
     
     # Date (Date only)
-    session = data.get("session", {})
     ts = session.get("start_time")
     if ts:
         try:

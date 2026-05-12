@@ -54,7 +54,7 @@ This regenerates the `*_SHARE.png` with the new coach review embedded.
 4. Append this content to the end of the `.md` file under a new header `## Social Media Post`.
 
 ### Step 6: Cleanup
-Delete the temporary JSON analysis file after successful completion.
+Remove any temporary artifacts. The JSON analysis file is preserved to support `--regen-share` regeneration.
 
 > **IMPORTANT**: All six steps must be completed automatically in a single invocation.
 
