@@ -1038,20 +1038,634 @@ def find_segments_ruptures(records):
         
     return segments
 
+def find_segments_adaptive(records):
+    """
+    HR Valley-Based Adaptive Segmentation.
+
+    Core idea: HR valleys (not intensity dips) are the most reliable rest markers.
+    HR lags behind physical changes, so the valley bottom confirms a genuine rest
+    happened. We then backtrack from each valley to find where pace/cadence began
+    falling — that's the actual rest start.
+
+    Algorithm:
+    1. Smooth HR and find local minima where HR drops > 8 bpm from prior peak
+    2. Validate each valley: nearby pace slowdown (>15%) OR cadence collapse (<12 spm or >40% drop)
+    3. Backtrack from valley to find rest start (pace/cadence declining)
+    4. Forward from valley to find rest end (pace recovering)
+    5. Merge valleys < 2min apart, build final segments
+    """
+    if not records or len(records) < 10:
+        return []
+
+    n = len(records)
+
+    # --- Extract arrays ---
+    hr = np.zeros(n)
+    spd = np.zeros(n)
+    cad = np.zeros(n)
+    timestamps = []
+
+    for i, r in enumerate(records):
+        hr[i] = float(r.get("heart_rate_smooth", 0) or 0)
+        spd[i] = float(r.get("speed_smooth", 0) or 0)
+        cad[i] = float(r.get("cadence_smooth", 0) or 0)
+        timestamps.append(r["dt"])
+
+    has_hr = np.any(hr > 0)
+    if not has_hr:
+        return _find_segments_no_hr(records)
+
+    # --- Step 1: Smooth HR and find valley candidates ---
+    hr_s = _smooth_rolling_median(hr, window=5)
+    valleys = _find_hr_valleys(hr_s, timestamps, min_drop_bpm=8, look_sec=30)
+    if not valleys:
+        return _fallback_single_block(records)
+
+    # --- Step 2 & 3: Backtrack from each valley, then validate the FULL rest segment ---
+    VALLEY_WINDOW_SEC = 20
+
+    rest_breaks = []
+    for v in valleys:
+        vi = v["idx"]
+
+        # Reference: pace/cadence from the 60s before the valley
+        ref_lo = max(0, vi - _sec_to_idx(timestamps, vi, 60))
+        ref_spd = np.mean(spd[ref_lo:vi]) if vi > ref_lo else np.mean(spd[spd > 0.5])
+        ref_cad = np.mean(cad[ref_lo:vi]) if vi > ref_lo else np.mean(cad[cad > 5])
+
+        # Backtrack to find rest start: where pace OR cadence starts falling
+        bt_start = max(0, vi - _sec_to_idx(timestamps, vi, 90))
+        rest_start = vi
+        for j in range(vi, bt_start, -1):
+            local_spd = np.mean(spd[max(0, j-3):min(n, j+4)])
+            local_cad = np.mean(cad[max(0, j-3):min(n, j+4)])
+            if local_spd < ref_spd * 0.85 or (local_cad < max(8, ref_cad * 0.60) and local_spd < ref_spd * 0.95):
+                rest_start = j
+            else:
+                break
+
+        # Forward to find rest end: where pace recovers
+        ft_end = min(n, vi + _sec_to_idx(timestamps, vi, 120))
+        rest_end = vi
+        for j in range(vi, ft_end):
+            local_spd = np.mean(spd[max(0, j-3):min(n, j+4)])
+            if local_spd > ref_spd * 0.85:
+                rest_end = j
+                break
+        else:
+            rest_end = min(ft_end, n - 1)
+
+        # --- Validate the ENTIRE rest segment ---
+        if rest_end <= rest_start + 1:
+            continue
+
+        rest_spd = np.mean(spd[rest_start:rest_end])
+        rest_cad = np.mean(cad[rest_start:rest_end])
+        rest_dur = (timestamps[rest_end-1] - timestamps[rest_start]).total_seconds()
+
+        # A real rest must have:
+        # 1. Average speed < 70% of reference (pace slowed significantly)
+        # 2. OR average cadence < 10 spm (basically stopped rowing)
+        # 3. Also check: rest HR should be declining or low relative to work
+        significant_slowdown = rest_spd < ref_spd * 0.75
+        very_low_cadence = rest_cad < 10.0
+
+        if not (significant_slowdown or very_low_cadence):
+            continue
+
+        # Duration sanity: rest should be at least 15s
+        if rest_dur < 15:
+            continue
+
+        # Check HR: rest HR must be notably lower than the valley's prior peak.
+        # Using the valley peak is more robust than a local window — it ensures
+        # the rest segment genuinely cooled down from the work intensity.
+        hr_during = np.mean(hr[rest_start:rest_end])
+        hr_declining = hr_during < v["hr_peak"] - 5
+
+        if not hr_declining:
+            continue
+
+        rest_breaks.append({
+            "rest_start": rest_start,
+            "rest_end": rest_end,
+            "rest_dur": rest_dur,
+            "rest_spd": rest_spd,
+            "rest_cad": rest_cad,
+            "ref_spd": ref_spd,
+            "ref_cad": ref_cad,
+            "hr_valley": v["hr_valley"],
+            "hr_drop": v["drop"],
+        })
+
+    if not rest_breaks:
+        return _fallback_single_block(records)
+
+    # --- Merge with gap-based rests (hardware auto-pauses) ---
+    gap_rests = _find_gap_rests(records, timestamps)
+    if gap_rests:
+        rest_breaks = _merge_rest_breaks(rest_breaks, gap_rests, timestamps)
+
+    # --- Step 4: Merge close rest breaks (< 2 min apart) ---
+    merged = []
+    for rb in rest_breaks:
+        if merged and rb["rest_start"] - merged[-1]["rest_end"] < _sec_to_idx(timestamps, merged[-1]["rest_end"], 120):
+            merged[-1]["rest_end"] = max(merged[-1]["rest_end"], rb["rest_end"])
+            merged[-1]["rest_dur"] = (timestamps[merged[-1]["rest_end"]-1] - timestamps[merged[-1]["rest_start"]]).total_seconds()
+        else:
+            merged.append(rb)
+
+    # --- Step 5: Build segments ---
+    segments = []
+    cursor = 0
+    lap_num = 1
+
+    for rb in merged:
+        rs = rb["rest_start"]
+        re = rb["rest_end"]
+
+        # Work segment before this rest
+        if rs > cursor + 2:
+            seg = _build_segment(records, cursor, rs, lap_num, "Work")
+            if seg:
+                segments.append(seg)
+                lap_num += 1
+
+        # Rest segment
+        if re > rs + 1:
+            seg = _build_segment(records, rs, re, lap_num, "Rest")
+            if seg:
+                segments.append(seg)
+                lap_num += 1
+
+        cursor = re
+
+    # Final work segment
+    if cursor + 2 < n:
+        seg = _build_segment(records, cursor, n, lap_num, "Work")
+        if seg:
+            segments.append(seg)
+
+    # --- Post-process: trim, merge same-type ---
+    return _postprocess_segments(segments)
+
+
+# --- HR Valley Helpers ---
+
+def _smooth_rolling_median(arr, window=5):
+    """Rolling median filter. Handles edges by shrinking window."""
+    out = np.zeros_like(arr)
+    half = window // 2
+    for i in range(len(arr)):
+        lo, hi = max(0, i - half), min(len(arr), i + half + 1)
+        out[i] = np.median(arr[lo:hi])
+    return out
+
+
+def _find_hr_valleys(hr, timestamps, min_drop_bpm=6, look_sec=20):
+    """
+    Find HR dips that represent genuine rest bottoms.
+    Uses non-strict local minima and checks HR drop from prior peak.
+
+    Key: we look for HR TRANSITIONS — points where the HR trend shifts from
+    climbing (or plateau) to declining, validated by a meaningful drop from
+    a recent peak. This catches short rests where HR doesn't form a deep valley.
+    """
+    n = len(hr)
+    if n < 3:
+        return []
+
+    valleys = []
+
+    for i in range(1, n - 1):
+        # Non-strict local minimum: HR not higher than either neighbor
+        if hr[i] > hr[i-1] or hr[i] > hr[i+1]:
+            continue
+
+        # Find prior peak within 2× look_sec before this point
+        pk_lo = max(0, i - _sec_to_idx(timestamps, i, look_sec * 2))
+        pk_hi = i
+        if pk_hi <= pk_lo:
+            continue
+
+        peak_val = np.max(hr[pk_lo:pk_hi])
+        drop = peak_val - hr[i]
+
+        if drop < min_drop_bpm:
+            continue
+
+        # Avoid duplicates: skip if a nearby index already recorded a valley
+        # and this one is less significant
+        half_win = _sec_to_idx(timestamps, i, look_sec // 2)
+        is_duplicate = False
+        for v in valleys:
+            if abs(v["idx"] - i) < half_win:
+                if v["drop"] >= drop:
+                    is_duplicate = True
+                    break
+        if is_duplicate:
+            continue
+
+        valleys.append({
+            "idx": i,
+            "hr_valley": hr[i],
+            "hr_peak": peak_val,
+            "drop": drop,
+        })
+
+    # Sort by drop significance (largest first) and deduplicate
+    valleys.sort(key=lambda v: v["drop"], reverse=True)
+    final = []
+    for v in valleys:
+        half_win = _sec_to_idx(timestamps, v["idx"], look_sec)
+        if not any(abs(v2["idx"] - v["idx"]) < half_win for v2 in final):
+            final.append(v)
+
+    # Return in chronological order
+    final.sort(key=lambda v: v["idx"])
+    return final
+
+
+def _sec_to_idx(timestamps, center_idx, seconds):
+    """Convert seconds to approximate index count around center_idx."""
+    if center_idx <= 0 or center_idx >= len(timestamps):
+        return int(seconds)  # rough fallback
+    # Estimate data rate around this point
+    look = min(20, len(timestamps) - center_idx - 1, center_idx)
+    if look < 2:
+        return int(seconds)
+    t_before = timestamps[center_idx - look]
+    t_after = timestamps[min(len(timestamps) - 1, center_idx + look)]
+    rate = (2 * look) / max((t_after - t_before).total_seconds(), 1)
+    return max(1, int(seconds * rate))
+
+
+def _time_window(timestamps, center_idx, window_sec):
+    """Return (start_idx, end_idx) spanning ±window_sec around center_idx."""
+    n = len(timestamps)
+    dt = timestamps[center_idx]
+    lo = max(0, center_idx - _sec_to_idx(timestamps, center_idx, window_sec))
+    hi = min(n, center_idx + _sec_to_idx(timestamps, center_idx, window_sec))
+    # Tighten to actual time bounds
+    import datetime
+    lo_dt = dt - datetime.timedelta(seconds=window_sec)
+    hi_dt = dt + datetime.timedelta(seconds=window_sec)
+    while lo < center_idx and timestamps[lo] < lo_dt:
+        lo += 1
+    while hi > center_idx and timestamps[hi-1] > hi_dt:
+        hi -= 1
+    return lo, hi
+
+
+def _build_segment(records, start_idx, end_idx, lap_num, seg_type):
+    """Create a lap dict from record slice. Returns None if too small."""
+    if end_idx <= start_idx or end_idx > len(records):
+        return None
+    seg_records = records[start_idx:end_idx]
+    compat = _make_compat_chunk(seg_records)
+    l_dict = create_lap_from_records(compat)
+    if not l_dict or l_dict.get("total_distance", 0) < 10:
+        return None
+    l_dict["lap_number"] = lap_num
+    l_dict["type"] = seg_type
+    l_dict["phase"] = seg_type
+    return l_dict
+
+
+def _find_segments_no_hr(records):
+    """
+    Speed-drop segmentation for sessions without HR data.
+
+    Without HR, we can't confirm rest physiologically. Instead we anchor on
+    speed-collapse events — moments where the boat genuinely slows to a crawl.
+    Cadence is used as a relative validator (has it dropped meaningfully?).
+
+    Algorithm:
+    1. Find speed-collapse runs: speed < 35% of session median for > 10s
+    2. Validate: cadence also dropped > 30% from reference
+    3. Backtrack to find rest start, forward to find rest end
+    4. Build segments
+    """
+    if not records or len(records) < 10:
+        return []
+
+    n = len(records)
+    spd = np.zeros(n)
+    cad = np.zeros(n)
+    timestamps = []
+
+    for i, r in enumerate(records):
+        spd[i] = float(r.get("speed_smooth", 0) or 0)
+        cad[i] = float(r.get("cadence_smooth", 0) or 0)
+        timestamps.append(r["dt"])
+
+    # Session baseline: median speed of non-zero points
+    nonzero_spd = spd[spd > 0.5]
+    if len(nonzero_spd) < 10:
+        return _fallback_single_block(records)
+    median_spd = np.median(nonzero_spd)
+
+    # --- Step 1: Find speed-collapse runs (speed < 35% of median for > 10s) ---
+    SPEED_COLLAPSE_RATIO = 0.35
+    MIN_COLLAPSE_SEC = 10
+
+    collapse_thresh = median_spd * SPEED_COLLAPSE_RATIO
+    collapse_runs = []
+    in_collapse = False
+    collapse_start = 0
+
+    for i in range(n):
+        if spd[i] < collapse_thresh:
+            if not in_collapse:
+                collapse_start = i
+                in_collapse = True
+        else:
+            if in_collapse:
+                dur = (timestamps[i-1] - timestamps[collapse_start]).total_seconds()
+                if dur >= MIN_COLLAPSE_SEC:
+                    collapse_runs.append((collapse_start, i, dur))
+                in_collapse = False
+
+    if in_collapse:
+        dur = (timestamps[-1] - timestamps[collapse_start]).total_seconds()
+        if dur >= MIN_COLLAPSE_SEC:
+            collapse_runs.append((collapse_start, n, dur))
+
+    if not collapse_runs:
+        return _fallback_single_block(records)
+
+    # --- Step 2 & 3: Validate with cadence, find rest boundaries ---
+    rest_breaks = []
+    for cs, ce, cdur in collapse_runs:
+        # Collapse center (lowest speed point)
+        collapse_center = cs + np.argmin(spd[cs:ce])
+
+        # Reference from 60s before collapse
+        ref_lo = max(0, collapse_center - _sec_to_idx(timestamps, collapse_center, 60))
+        ref_spd = np.mean(spd[ref_lo:collapse_center]) if collapse_center > ref_lo else median_spd
+        ref_cad = np.mean(cad[ref_lo:collapse_center]) if collapse_center > ref_lo else np.median(cad[cad > 8])
+
+        # Validate: speed must be genuinely near-zero (not a slow paddle)
+        collapse_spd = np.mean(spd[cs:ce])
+        if collapse_spd > median_spd * 0.50:
+            # Speed didn't collapse enough — this is just slow rowing, not a stop
+            continue
+
+        # Backtrack: where did speed start falling?
+        bt_start = max(0, collapse_center - _sec_to_idx(timestamps, collapse_center, 90))
+        rest_start = collapse_center
+        for j in range(collapse_center, bt_start, -1):
+            local_spd = np.mean(spd[max(0, j-3):min(n, j+4)])
+            if local_spd < ref_spd * 0.85:
+                rest_start = j
+            else:
+                break
+
+        # Forward: where does speed recover?
+        ft_end = min(n, collapse_center + _sec_to_idx(timestamps, collapse_center, 120))
+        rest_end = collapse_center
+        for j in range(collapse_center, ft_end):
+            local_spd = np.mean(spd[max(0, j-3):min(n, j+4)])
+            if local_spd > ref_spd * 0.80:
+                rest_end = j
+                break
+        else:
+            rest_end = min(ft_end, n - 1)
+
+        if rest_end <= rest_start + 1:
+            continue
+
+        rest_spd = np.mean(spd[rest_start:rest_end])
+        rest_dur = (timestamps[rest_end-1] - timestamps[rest_start]).total_seconds()
+
+        if rest_dur < 8:
+            continue
+
+        rest_breaks.append({
+            "rest_start": rest_start,
+            "rest_end": rest_end,
+            "rest_dur": rest_dur,
+            "rest_spd": rest_spd,
+            "ref_spd": ref_spd,
+        })
+
+    if not rest_breaks:
+        return _fallback_single_block(records)
+
+    # --- Merge with gap-based rests ---
+    gap_rests = _find_gap_rests(records, timestamps)
+    if gap_rests:
+        rest_breaks = _merge_rest_breaks(rest_breaks, gap_rests, timestamps)
+
+    # --- Step 4: Merge close breaks ---
+    merged = []
+    for rb in rest_breaks:
+        if merged and rb["rest_start"] - merged[-1]["rest_end"] < _sec_to_idx(timestamps, merged[-1]["rest_end"], 120):
+            merged[-1]["rest_end"] = max(merged[-1]["rest_end"], rb["rest_end"])
+        else:
+            merged.append(rb)
+
+    # --- Step 5: Build segments ---
+    segments = []
+    cursor = 0
+    lap_num = 1
+
+    for rb in merged:
+        rs, re = rb["rest_start"], rb["rest_end"]
+
+        if rs > cursor + 2:
+            seg = _build_segment(records, cursor, rs, lap_num, "Work")
+            if seg:
+                segments.append(seg)
+                lap_num += 1
+
+        if re > rs + 1:
+            seg = _build_segment(records, rs, re, lap_num, "Rest")
+            if seg:
+                segments.append(seg)
+                lap_num += 1
+
+        cursor = re
+
+    if cursor + 2 < n:
+        seg = _build_segment(records, cursor, n, lap_num, "Work")
+        if seg:
+            segments.append(seg)
+
+    return _postprocess_segments(segments)
+
+
+def _fallback_single_block(records):
+    """Single clean block — no rest breaks detected."""
+    seg = _build_segment(records, 0, len(records), 1, "Work")
+    return [seg] if seg else []
+
+
+def _find_gap_rests(records, timestamps):
+    """
+    Find unambiguous rest breaks from hardware data gaps.
+    SpeedCoach normally records every 3-4s. Gaps > 3x median (min 10s)
+    indicate the rower stopped recording (auto-pause / genuine rest).
+    """
+    if len(records) < 20:
+        return []
+
+    # Calculate median gap
+    gaps = []
+    for i in range(1, min(len(timestamps), 200)):
+        g = (timestamps[i] - timestamps[i-1]).total_seconds()
+        if g > 0:
+            gaps.append(g)
+    median_gap = np.median(gaps) if gaps else 4.0
+    threshold = max(median_gap * 3.0, 10.0)
+
+    rest_breaks = []
+    n = len(records)
+    for i in range(1, n):
+        g = (timestamps[i] - timestamps[i-1]).total_seconds()
+        if g > threshold:
+            # Expand to capture surrounding slowdown/recovery
+            rest_start = max(0, i - 1 - 3)
+            rest_end = min(n, i + 3)
+
+            # Validate: the gap must coincide with an actual speed drop
+            # Check speed in a small window around the gap
+            check_lo = max(0, i - 1 - 5)
+            check_hi = min(n, i + 5)
+            gap_spd = np.mean([float(records[j].get("speed_smooth", 0) or 0)
+                               for j in range(check_lo, check_hi) if j < n])
+
+            # Get session median speed for reference
+            all_spd = np.array([float(r.get("speed_smooth", 0) or 0) for r in records
+                               if float(r.get("speed_smooth", 0) or 0) > 0.5])
+            median_spd = np.median(all_spd) if len(all_spd) > 10 else 3.0
+
+            # Gap is only a rest if surrounding speed drops below 50% of median
+            if gap_spd > median_spd * 0.50:
+                continue
+
+            rest_breaks.append({
+                "rest_start": rest_start,
+                "rest_end": rest_end,
+                "rest_dur": g,
+                "source": "gap",
+            })
+
+    return rest_breaks
+
+
+def _merge_rest_breaks(existing, gaps, timestamps):
+    """Merge gap-detected rests with algorithm-detected rests, deduplicating overlaps."""
+    all_breaks = list(existing) + list(gaps)
+    if not all_breaks:
+        return []
+
+    # Sort by rest_start
+    all_breaks.sort(key=lambda r: r["rest_start"])
+
+    merged = []
+    for rb in all_breaks:
+        if merged and rb["rest_start"] <= merged[-1]["rest_end"] + _sec_to_idx(timestamps, merged[-1]["rest_end"], 10):
+            # Overlap or very close — merge
+            merged[-1]["rest_end"] = max(merged[-1]["rest_end"], rb["rest_end"])
+            merged[-1]["rest_dur"] = max(
+                merged[-1].get("rest_dur", 0),
+                (timestamps[min(merged[-1]["rest_end"], len(timestamps)-1)] -
+                 timestamps[merged[-1]["rest_start"]]).total_seconds()
+            )
+        else:
+            merged.append(dict(rb))
+
+    return merged
+
+
+def _postprocess_segments(segments):
+    """Trim noise, merge consecutive same-type segments."""
+    if not segments:
+        return []
+
+    # Trim leading noise
+    while segments:
+        s = segments[0]
+        if (s.get("total_timer_time") or 0) < 30 and (s.get("total_distance") or 0) < 80:
+            segments.pop(0)
+        else:
+            break
+
+    # Trim trailing noise
+    while len(segments) >= 2:
+        s = segments[-1]
+        if (s.get("total_timer_time") or 0) < 40 and (s.get("total_distance") or 0) < 120:
+            segments.pop()
+        else:
+            break
+
+    # Merge consecutive same-type
+    merged = []
+    for seg in segments:
+        if merged and seg["type"] == merged[-1]["type"]:
+            _merge_two_segments(merged[-1], seg)
+        else:
+            merged.append(seg)
+
+    # Renumber
+    for i, seg in enumerate(merged):
+        seg["lap_number"] = i + 1
+
+    return merged
+
+
+def _merge_two_segments(prev, seg):
+    """Merge seg into prev, updating metrics in place."""
+    prev["total_timer_time"] = (prev.get("total_timer_time") or 0) + (seg.get("total_timer_time") or 0)
+    prev["total_distance"] = (prev.get("total_distance") or 0) + (seg.get("total_distance") or 0)
+    if prev["total_timer_time"] and prev["total_timer_time"] > 0:
+        prev["avg_speed"] = prev["total_distance"] / prev["total_timer_time"]
+    prev_hr = prev.get("avg_heart_rate") or 0
+    seg_hr = seg.get("avg_heart_rate") or 0
+    prev_tt = prev.get("total_timer_time") or 1
+    seg_tt = seg.get("total_timer_time") or 0
+    if prev_hr and seg_hr:
+        prev["avg_heart_rate"] = int(round((prev_hr * (prev_tt - seg_tt) + seg_hr * seg_tt) / prev_tt))
+    prev_cad = prev.get("avg_cadence") or 0
+    seg_cad = seg.get("avg_cadence") or 0
+    if prev_cad and seg_cad:
+        prev["avg_cadence"] = int(round((prev_cad * (prev_tt - seg_tt) + seg_cad * seg_tt) / prev_tt))
+
+
+def _make_compat_chunk(seg_records):
+    """Convert preprocessed records into the format create_lap_from_records expects."""
+    compat_chunk = []
+    for r in seg_records:
+        compat_chunk.append({
+            "dt": r["dt"],
+            "dist": float(r.get("distance", 0) or 0),
+            "data": r,
+            "speed": r.get("speed_smooth", 0)
+        })
+    return compat_chunk
+
+
 def auto_segment(records):
     """
-    Wrapper: Try Ruptures first, then fallback to manual Time-Based CPD.
+    Wrapper: HR Valley → Ruptures (Pelt) → Manual Time-Based CPD.
     """
     # 1. Preprocess (Smoothed)
     data = preprocess_records(records)
     if not data: return []
-    
-    # 2. Ruptures
+
+    # 2. HR Valley Adaptive (primary)
+    print("Using HR Valley adaptive segmentation...")
+    adaptive_laps = find_segments_adaptive(data)
+    if adaptive_laps and len(adaptive_laps) > 1:
+        return adaptive_laps
+
+    # 3. Ruptures (fallback #1)
     if rpt:
-        print(f"Using Ruptures (Pelt) for segmentation...")
+        print("HR Valley produced 0-1 segments, falling back to Ruptures (Pelt)...")
         return find_segments_ruptures(data)
-    
-    # 3. Fallback Manual Logic
+
+    # 4. Manual Time-Based CPD (fallback #2)
     print("Ruptures not available, using manual time-based segmentation...")
     segments = []
     current_segment = [data[0]]
@@ -1301,7 +1915,7 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
                 "avg_cadence": l.get("avg_cadence", 0),
                 "avg_heart_rate": l.get("avg_heart_rate", 0),
                 "dps": round(l.get("avg_speed", 0) / (l.get("avg_cadence", 0) / 60), 1) if l.get("avg_cadence", 0) > 0 else "N/A",
-                "type": l.get("segment_type", "Unknown")
+                "type": l.get("segment_type") or l.get("type") or "Unknown"
             }
             for i, l in enumerate(laps)
         ],
@@ -1355,14 +1969,22 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
             elif isinstance(intensity, int):
                 is_rest = intensity != 0  # Anything other than 0 (active) is considered rest
         else:
-            # Method 2: Speed heuristic fallback (if intensity field is missing)
-            avg_speed = float(lap.get("avg_speed", 0) or 0)
-            if avg_speed < 2.0:  # Slower than 4:10/500m
+            # Method 2: Check if adaptive algorithm already classified this lap
+            existing_type = lap.get("type")
+            if existing_type == "Rest":
+                # Trust the adaptive algorithm's classification
                 is_rest = True
-             
+            elif existing_type == "Work" or existing_type == "Active":
+                is_rest = False
+            else:
+                # Fallback: speed heuristic (only when no type is set)
+                avg_speed = float(lap.get("avg_speed", 0) or 0)
+                if avg_speed < 2.0:  # Slower than 4:10/500m
+                    is_rest = True
+
         if is_rest:
             lap["avg_cadence"] = 0  # Suppress nonsense SPM for rest intervals
-            
+
         lap["type"] = "Rest" if is_rest else "Work"
         processed_laps.append(lap)
         
