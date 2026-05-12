@@ -73,13 +73,15 @@ def parse_output_paths(stdout):
     """Parse file paths from parse_fit.py stdout."""
     paths = {}
     for line in stdout.splitlines():
-        m = re.search(r'(?:JSON generated|Chart image saved|Markdown):\s+(.+)', line)
+        m = re.search(r'(?:JSON generated|Chart image saved|Markdown|XHS Image):\s+(.+)', line)
         if m:
             path = m.group(1).strip()
             if path.endswith('.json'):
                 paths['json'] = path
             elif path.endswith('.md'):
                 paths['md'] = path
+            elif path.endswith('_XHS.png'):
+                paths['xhs'] = path
             elif path.endswith('.png'):
                 paths['png'] = path
     # Check for SHARE.png
@@ -120,6 +122,10 @@ def run_fixture(fixture_name, spec):
         errors.append("PNG output not found in stdout")
     if 'share' in paths:
         errors.append(f"SHARE.png should not be generated: {paths['share']}")
+    if 'xhs' not in paths:
+        errors.append("XHS image not generated (missing 📱 XHS Image in stdout)")
+    elif not os.path.exists(paths['xhs']):
+        errors.append(f"XHS file does not exist: {paths['xhs']}")
 
     for key in ('json', 'md', 'png'):
         if key in paths and not os.path.exists(paths[key]):
@@ -180,7 +186,7 @@ def run_fixture(fixture_name, spec):
             errors.append("Expected Work segments but none found")
 
     # 7. Cleanup generated files
-    for key in ('json', 'md', 'png'):
+    for key in ('json', 'md', 'png', 'xhs'):
         if key in paths and os.path.exists(paths[key]):
             os.remove(paths[key])
 

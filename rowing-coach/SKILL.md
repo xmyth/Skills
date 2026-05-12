@@ -22,6 +22,7 @@ python3 scripts/parse_fit.py <path_to_fit_file>
 - `ROW_*.json` / `ERG_*.json` - Structured data for analysis
 - `ROW_<timestamp>.md` or `ERG_<timestamp>.md` - Initial report with placeholder review
 - `ROW_<timestamp>.png` or `ERG_<timestamp>.png` - Pacing chart image
+- `ROW_<timestamp>_XHS.png` or `ERG_<timestamp>_XHS.png` - Xiaohongshu training image
 
 ### Step 2: Generate Professional Coach Review
 **IMMEDIATELY** after Step 1:
@@ -50,7 +51,7 @@ Replace the placeholder review in the generated `.md` file with your professiona
 ### Step 5: Cleanup
 Remove any temporary artifacts. The JSON analysis file is preserved to support `--regen-share` regeneration.
 
-> **IMPORTANT**: All five steps must be completed automatically in a single invocation.
+> **IMPORTANT**: All five steps must be completed automatically in a single invocation. The `*_XHS.png` training image is generated automatically by the script during Step 1.
 
 ## Adaptive Segmentation Algorithm
 
