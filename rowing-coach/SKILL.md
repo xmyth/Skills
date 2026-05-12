@@ -1,6 +1,6 @@
 ---
 name: rowing-coach
-description: Professional rowing coach assistant that analyzes FIT files and generates detailed training reports. Use when the user uploads a .fit file from a rowing session (Concept2, Garmin, etc.) or asks for a rowing workout analysis.
+description: Professional rowing coach assistant that analyzes FIT files and generates detailed training reports. Use when the user uploads a .fit file from a rowing session (Concept2, Garmin, SpeedCoach, etc.) or asks for a rowing workout analysis.
 ---
 
 # Rowing Coach
@@ -14,8 +14,10 @@ When analyzing a FIT file, execute **ALL** steps automatically without waiting f
 
 ### Step 1: Parse FIT File
 ```bash
-.gemini/skills/rowing-coach/.venv/bin/python3 .gemini/skills/rowing-coach/scripts/parse_fit.py <path_to_fit_file>
+python3 scripts/parse_fit.py <path_to_fit_file>
 ```
+> The skill directory is the working directory. Adjust the Python path (`python3`, `.venv/bin/python3`) to match your environment.
+
 **Outputs**:
 - `ROW_*.json` / `ERG_*.json` - Structured data for analysis
 - `ROW_<timestamp>.md` or `ERG_<timestamp>.md` - Initial report with placeholder review
@@ -36,7 +38,7 @@ Replace the placeholder review in the generated `.md` file with your professiona
 
 ### Step 4: Regenerate Share Image
 ```bash
-.gemini/skills/rowing-coach/.venv/bin/python3 .gemini/skills/rowing-coach/scripts/parse_fit.py --regen-share <path_to_updated_md>
+python3 scripts/parse_fit.py --regen-share <path_to_updated_md>
 ```
 This regenerates the `*_SHARE.png` with the new coach review embedded.
 
@@ -56,10 +58,21 @@ Delete the temporary JSON analysis file after successful completion.
 
 > **IMPORTANT**: All six steps must be completed automatically in a single invocation.
 
+## Adaptive Segmentation Algorithm
+
+The `parse_fit.py` script uses a multi-layered adaptive segmentation approach:
+
+1. **Device Laps**: If the FIT file contains native lap markers, they are used directly (gold standard).
+2. **HR Valley** (with HR data): Finds HR local minima (> 6 bpm drop from prior peak), validates with pace slowdown and cadence collapse, then backtracks to find rest start and forward to find rest end.
+3. **Speed Collapse** (no HR data): Finds speed drops below 35% of session median, validates surrounding data, and applies the same backtrack/forward logic.
+4. **Gap Detection** (always active): Hardware data gaps > 3× median sampling interval (min 10s) with surrounding speed validation.
+
+All thresholds are relative and adaptive — no hardcoded pace or HR values.
+
 ## Resources
 
 ### Scripts
-- `.gemini/skills/rowing-coach/scripts/parse_fit.py`: Parses FIT files and generates initial reports.
+- `scripts/parse_fit.py`: Core FIT parsing, adaptive segmentation, and report generation.
 
 ### References
 - `references/coach_guidelines.md`: Technical evaluation criteria (DPS benchmarks, zones, pacing).
