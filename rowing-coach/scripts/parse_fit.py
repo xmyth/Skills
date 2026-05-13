@@ -3828,7 +3828,7 @@ def generate_xhs_image(data, chart_buffer, output_dir, file_prefix):
         spd = float(lap.get("avg_speed", 0))
         cad = float(lap.get("avg_cadence", 0))
         time_str = f"{int(time_sec // 60)}:{int(time_sec % 60):02d}"
-        dist_str = f"{dist_m / 1000:.2f}k"
+        dist_str = f"{int(round(dist_m))}m"
         seg_label = str(i + 1)
 
         if is_rest:
