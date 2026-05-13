@@ -1908,7 +1908,9 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
             "total_distance_km": session.get("total_distance", 0) / 1000,
             "total_time_min": session.get("total_elapsed_time", 0) / 60,
             "start_time": session.get("start_time", ""),
-            "location": data.get("location_name", "Unknown")
+            "location": data.get("location_name") or session.get("city") or "Unknown",
+            "city": session.get("city", ""),
+            "weather": session.get("weather", "")
         },
         "aggregated_metrics": {
             "avg_dps": round(avg_dps, 1),
@@ -3463,7 +3465,10 @@ def main():
     
     if parsed_data:
         analyzed_data = analyze_rowing(parsed_data, args.max_hr, args.resting_hr)
-        
+
+        # Enrich session with weather/city before JSON export
+        _enrich_session_weather(analyzed_data)
+
         # Export analysis JSON (Keep this as an artifact)
         json_path = export_analysis_json(analyzed_data, args.file_path, args.max_hr, args.resting_hr)
         print(f"✅ Analysis JSON generated: {json_path}")
@@ -3531,17 +3536,44 @@ def _draw_gradient(draw, width, height, top_color, mid_color, bot_color):
             b = int(mid_color[2] + (bot_color[2] - mid_color[2]) * t)
         draw.line([(0, y), (width, y)], fill=(r, g, b))
 
-def _fetch_city(lat, lon):
-    """Reverse geocode lat/lon to city name. Returns '上海' or '' on failure."""
+def _enrich_session_weather(data):
+    """Fetch city and weather for the session and store in session dict."""
+    session = data.get("session", {})
+    if session.get("sub_sport") == "indoor_rowing":
+        return
+    lat_raw = session.get("start_position_lat")
+    lon_raw = session.get("start_position_long")
+    start_t = session.get("start_time")
+    if not lat_raw or not lon_raw or not start_t:
+        return
     try:
-        from geopy.geocoders import Nominatim
-        geo = Nominatim(user_agent="rowing-coach")
-        loc = geo.reverse((lat, lon), language="zh", timeout=3)
-        if loc:
-            addr = loc.raw.get("address", {})
-            city = addr.get("city") or addr.get("town") or addr.get("county") or addr.get("state") or ""
-            if city:
-                return city
+        lat = lat_raw * 180.0 / (2**31)
+        lon = lon_raw * 180.0 / (2**31)
+        dt = datetime.datetime.fromisoformat(str(start_t))
+        dt_local = dt + datetime.timedelta(hours=8)
+        city = _fetch_city(lat, lon)
+        if city:
+            session["city"] = city
+        weather = _fetch_weather(lat, lon, dt_local)
+        if weather:
+            session["weather"] = weather.strip(" ·")
+    except Exception:
+        pass
+
+def _fetch_city(lat, lon):
+    """Reverse geocode lat/lon to city name via OpenStreetMap Nominatim HTTP API."""
+    try:
+        import urllib.request, json
+        url = (
+            f"https://nominatim.openstreetmap.org/reverse?"
+            f"lat={lat:.5f}&lon={lon:.5f}&format=json&accept-language=zh"
+        )
+        req = urllib.request.Request(url, headers={"User-Agent": "rowing-coach"})
+        resp = urllib.request.urlopen(req, timeout=10)
+        data = json.loads(resp.read())
+        addr = data.get("address", {})
+        city = addr.get("state") or addr.get("city") or addr.get("town") or addr.get("county") or ""
+        return city if city else ""
     except Exception:
         pass
     return ""
@@ -3552,12 +3584,12 @@ def _fetch_weather(lat, lon, dt):
         import urllib.request, json
         date_str = dt.strftime("%Y-%m-%d")
         url = (
-            f"https://archive-api.open-meteo.com/v1/archive?"
+            f"http://archive-api.open-meteo.com/v1/archive?"
             f"latitude={lat:.4f}&longitude={lon:.4f}"
             f"&start_date={date_str}&end_date={date_str}"
             f"&hourly=temperature_2m,weather_code&timezone=auto"
         )
-        req = urllib.request.urlopen(url, timeout=5)
+        req = urllib.request.urlopen(url, timeout=10)
         data = json.loads(req.read())
         hourly = data.get("hourly", {})
         times = hourly.get("time", [])
@@ -3678,17 +3710,13 @@ def generate_xhs_image(data, chart_buffer, output_dir, file_prefix):
             hour = dt.hour
             tod = "清晨" if 5 <= hour < 9 else ("上午" if 9 <= hour < 12 else ("下午" if 12 <= hour < 18 else "晚间"))
             date_str = f"{dt.year}年{dt.month}月{dt.day}日 · 星期{weekday} · {tod}"
-            # Fetch weather and city if GPS available
-            lat_raw = session.get("start_position_lat")
-            lon_raw = session.get("start_position_long")
-            if lat_raw and lon_raw and not is_indoor:
-                lat = lat_raw * 180.0 / (2**31)
-                lon = lon_raw * 180.0 / (2**31)
-                city = _fetch_city(lat, lon)
-                if city:
-                    date_str += f" · {city}"
-                weather = _fetch_weather(lat, lon, dt)
-                date_str += weather
+            # Append cached city and weather
+            city = session.get("city", "")
+            weather = session.get("weather", "")
+            if city:
+                date_str += f" · {city}"
+            if weather:
+                date_str += f" · {weather}"
         except:
             pass
 
@@ -3725,7 +3753,8 @@ def generate_xhs_image(data, chart_buffer, output_dir, file_prefix):
 
     with Pilmoji(hero) as p:
         p.text((img_width//2, 35), type_label, fill=accent_cyan, font=font_title, anchor="ma")
-    hdraw.text((img_width//2, 68), date_str, fill=text_muted, font=font_date, anchor="ma")
+    with Pilmoji(hero) as p:
+        p.text((img_width//2, 68), date_str, fill=text_muted, font=font_date, anchor="ma")
 
     col_centers = [int(img_width * 0.21), int(img_width * 0.5), int(img_width * 0.79)]
     hero_labels = ["距离", "用时", "平均配速"]
