@@ -43,7 +43,8 @@ Replace the placeholder review in the generated `.md` file with your professiona
 2. Generate a social media post suitable for Xiaohongshu (Red Note) in Chinese.
 3. The post should include:
     - **Catchy Title**: Use emojis and an engaging hook.
-    - **Key Stats**: Distance, Total Time, Average Pace, Stroke Rate.
+    - **Key Stats**: Distance, Total Time, Average Pace, Stroke Rate, Heart Rate, DPS.
+    - **Detailed Segments**: A compact segment-by-segment breakdown showing each segment's distance, pace, SPM, and HR. Rest segments should be clearly marked.
     - **Coach's "One Thing"**: A single, impactful piece of advice or encouragement from the review.
     - **Tags**: Relevant hashtags (e.g., #赛艇 #Rowing #Concept2 #训练打卡).
 4. Append this content to the end of the `.md` file under a new header `## Social Media Post`.
