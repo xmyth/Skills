@@ -3829,13 +3829,15 @@ def generate_xhs_image(data, chart_buffer, output_dir, file_prefix):
         ("桨频", 0.09), ("心率", 0.09), ("↓↑", 0.12), ("DPS", 0.12),
         ("类型", 0.09)
     ]
-    col_w = img_width - 2 * padding - 16
-    col_x = [8 + int(col_w * sum(c[1] for c in cols[:j])) + (8 if j > 0 else 0) for j in range(len(cols))]
+    col_w = img_width - 2 * padding - 32
+    col_x = [16 + int(col_w * sum(c[1] for c in cols[:j])) + (8 if j > 0 else 0) for j in range(len(cols))]
+    # Center positions for each column
+    col_cx = [col_x[j] + int(col_w * cols[j][1] / 2) for j in range(len(cols))]
 
     # Header row
     header_y = title_h + 8
     for j, (label, _) in enumerate(cols):
-        tdraw.text((col_x[j], header_y), label, fill=text_dim, font=font_table_hdr, anchor="lm")
+        tdraw.text((col_cx[j], header_y), label, fill=text_dim, font=font_table_hdr, anchor="mm")
 
     first_data_y = title_h + header_h + 4
     for i, lap in enumerate(show_laps):
@@ -3882,7 +3884,7 @@ def generate_xhs_image(data, chart_buffer, output_dir, file_prefix):
 
         row_data = [seg_label, time_str, dist_str, pace, spm_text, hr_text, hr_ext_text, dps_text, seg_type]
         for j, val in enumerate(row_data):
-            tdraw.text((col_x[j], row_center_y), val, fill=row_color, font=font_table_body, anchor="lm")
+            tdraw.text((col_cx[j], row_center_y), val, fill=row_color, font=font_table_body, anchor="mm")
 
     # --- BLOCK 5: Footer (80px) ---
     footer_height = 80
