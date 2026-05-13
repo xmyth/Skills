@@ -3206,53 +3206,49 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val):
         f.write("\n---\n")
         
         f.write("## Full Segments\n\n")
-        f.write("| # | Time | Distance | Pace/500m | SPM | HR | DPS | Note |\n")
-        f.write("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n")
-        
+        f.write("| # | Time | Distance | Pace/500m | SPM | HR | ↓↑ | DPS | Type |\n")
+        f.write("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n")
+
         for i, lap in enumerate(laps):
             num = lap.get("lap_number", i+1)
-            
+
             # Duration format mm:ss
             dur_s = lap.get("total_timer_time", 0)
             m = int(dur_s // 60)
             s = int(dur_s % 60)
             dur_str = f"{m}:{s:02}"
-            
-            # Remove "0:" prefix if hours present (simple logic)
+
             if dur_s >= 3600:
                 h = int(dur_s // 3600)
                 m = int((dur_s % 3600) // 60)
                 dur_str = f"{h}:{m:02}:{s:02}"
-            
+
             dist = lap.get("total_distance", 0)
-            
-            # Round distance to nearest integer to avoid 499m -> 499 (truncation) issue
             dist_str = f"{int(round(dist))}m"
-            
+
             pace = lap.get("avg_500m_split", "-")
             cad = lap.get("avg_cadence", 0) or 0
             cad_str = str(cad) if cad > 0 else "-"
             hr = lap.get("avg_heart_rate", 0) or 0
             avg_spd = lap.get("avg_speed", 0)
-            
-            # DPS
+
             dps = calculate_dps(avg_spd, cad) if cad > 0 else 0
             dps_str = f"{dps:.1f}m" if dps > 0 else "-"
-            
-            # HR display
             hr_str = str(int(hr)) if hr > 0 else "-"
-            
-            # Classify intervals based on SPM and HR
+
             is_rest = lap.get("type") == "Rest"
             if is_rest:
                 note = "Rest"
+                hr_min = lap.get("min_heart_rate") or hr
+                hr_ext = f"↓{int(hr_min)}" if hr_min > 0 else "-"
+                cad_str = "-"
+                dps_str = "-"
             else:
-                # Use new centralized classification function
                 note = classify_training_zone(hr, cad, max_hr_val, resting_hr_val)
-            
-            # No special formatting - plain table row
-            # Round distance to nearest integer to avoid 499m -> 499 (truncation) issue
-            row_str = f"| {num} | {dur_str} | {int(round(dist))}m | {pace} | {cad_str} | {hr_str} | {dps_str} | {note} |"
+                hr_max = lap.get("max_heart_rate") or hr
+                hr_ext = f"↑{int(hr_max)}" if hr_max > 0 else "-"
+
+            row_str = f"| {num} | {dur_str} | {int(round(dist))}m | {pace} | {cad_str} | {hr_str} | {hr_ext} | {dps_str} | {note} |"
             f.write(row_str + "\n")
             
         f.write("\n---\n")
@@ -3535,6 +3531,68 @@ def _draw_gradient(draw, width, height, top_color, mid_color, bot_color):
             b = int(mid_color[2] + (bot_color[2] - mid_color[2]) * t)
         draw.line([(0, y), (width, y)], fill=(r, g, b))
 
+def _fetch_city(lat, lon):
+    """Reverse geocode lat/lon to city name. Returns '上海' or '' on failure."""
+    try:
+        from geopy.geocoders import Nominatim
+        geo = Nominatim(user_agent="rowing-coach")
+        loc = geo.reverse((lat, lon), language="zh", timeout=3)
+        if loc:
+            addr = loc.raw.get("address", {})
+            city = addr.get("city") or addr.get("town") or addr.get("county") or addr.get("state") or ""
+            if city:
+                return city
+    except Exception:
+        pass
+    return ""
+
+def _fetch_weather(lat, lon, dt):
+    """Fetch historical weather from Open-Meteo. Returns '☀️ 晴 18°C' or '' on failure."""
+    try:
+        import urllib.request, json
+        date_str = dt.strftime("%Y-%m-%d")
+        url = (
+            f"https://archive-api.open-meteo.com/v1/archive?"
+            f"latitude={lat:.4f}&longitude={lon:.4f}"
+            f"&start_date={date_str}&end_date={date_str}"
+            f"&hourly=temperature_2m,weather_code&timezone=auto"
+        )
+        req = urllib.request.urlopen(url, timeout=5)
+        data = json.loads(req.read())
+        hourly = data.get("hourly", {})
+        times = hourly.get("time", [])
+        temps = hourly.get("temperature_2m", [])
+        codes = hourly.get("weather_code", [])
+        if not times or not temps:
+            return ""
+        # Find closest hour
+        target_hour = dt.hour
+        best_idx = 0
+        best_diff = 999
+        for i, t in enumerate(times):
+            h = int(t.split("T")[1].split(":")[0]) if "T" in t else 0
+            diff = abs(h - target_hour)
+            if diff < best_diff:
+                best_diff = diff
+                best_idx = i
+        temp = int(round(temps[best_idx]))
+        code = codes[best_idx] if best_idx < len(codes) else 0
+        # WMO weather code to emoji + description
+        weather_map = {
+            0: ("☀️", "晴"), 1: ("🌤", "少云"), 2: ("⛅", "多云"),
+            3: ("☁️", "阴"), 45: ("🌫", "雾"), 48: ("🌫", "雾凇"),
+            51: ("🌦", "小雨"), 53: ("🌦", "中雨"), 55: ("🌧", "大雨"),
+            61: ("🌧", "小雨"), 63: ("🌧", "中雨"), 65: ("🌧", "大雨"),
+            71: ("❄️", "小雪"), 73: ("❄️", "中雪"), 75: ("❄️", "大雪"),
+            80: ("🌦", "阵雨"), 81: ("🌧", "中阵雨"), 82: ("🌧", "大阵雨"),
+            95: ("⛈", "雷暴"), 96: ("⛈", "雷暴冰雹"), 99: ("⛈", "强雷暴"),
+        }
+        emoji, desc = weather_map.get(code, ("", ""))
+        weather_str = f" · {emoji} {desc} {temp}°C" if emoji else f" · {temp}°C"
+        return weather_str
+    except Exception:
+        return ""
+
 def generate_xhs_image(data, chart_buffer, output_dir, file_prefix):
     """
     Generate a Xiaohongshu-optimized training image.
@@ -3620,6 +3678,17 @@ def generate_xhs_image(data, chart_buffer, output_dir, file_prefix):
             hour = dt.hour
             tod = "清晨" if 5 <= hour < 9 else ("上午" if 9 <= hour < 12 else ("下午" if 12 <= hour < 18 else "晚间"))
             date_str = f"{dt.year}年{dt.month}月{dt.day}日 · 星期{weekday} · {tod}"
+            # Fetch weather and city if GPS available
+            lat_raw = session.get("start_position_lat")
+            lon_raw = session.get("start_position_long")
+            if lat_raw and lon_raw and not is_indoor:
+                lat = lat_raw * 180.0 / (2**31)
+                lon = lon_raw * 180.0 / (2**31)
+                city = _fetch_city(lat, lon)
+                if city:
+                    date_str += f" · {city}"
+                weather = _fetch_weather(lat, lon, dt)
+                date_str += weather
         except:
             pass
 
