@@ -303,7 +303,15 @@ def create_lap_from_records(records_chunk):
     avg_cad = calculate_weighted_average(records_chunk, "cadence")
     avg_hr = calculate_weighted_average(records_chunk, "heart_rate")
     avg_pwr = calculate_weighted_average(records_chunk, "power")
-    
+
+    # Min/Max Heart Rate from raw records
+    hr_vals = []
+    for r in records_chunk:
+        hr = (r.get("heart_rate_smooth") or r.get("heart_rate") or
+              (r.get("data", {}).get("heart_rate_smooth") or r.get("data", {}).get("heart_rate")))
+        if hr and float(hr) > 0:
+            hr_vals.append(float(hr))
+
     return {
         "start_time": t_start.isoformat(),
         "total_timer_time": duration,
@@ -312,7 +320,9 @@ def create_lap_from_records(records_chunk):
         "avg_speed": avg_spd,
         "avg_cadence": int(round(avg_cad)),
         "avg_heart_rate": int(round(avg_hr)),
-        "avg_power": int(round(avg_pwr))
+        "avg_power": int(round(avg_pwr)),
+        "min_heart_rate": int(round(min(hr_vals))) if hr_vals else 0,
+        "max_heart_rate": int(round(max(hr_vals))) if hr_vals else 0,
     }
 
 def find_best_effort(records, target_dist_m):
@@ -465,6 +475,20 @@ def analyze_rowing(data, max_hr=190, resting_hr=60):
                     if not lap.get("avg_heart_rate"):
                         val = calculate_weighted_average(lap_records, "heart_rate")
                         if val > 0: lap["avg_heart_rate"] = int(round(val))
+
+                    # Backfill min/max HR if missing
+                    if not lap.get("min_heart_rate") or not lap.get("max_heart_rate"):
+                        hr_vals = []
+                        for x in lap_records:
+                            hr = (x.get("heart_rate_smooth") or x.get("heart_rate") or
+                                  (x.get("data", {}).get("heart_rate_smooth") or x.get("data", {}).get("heart_rate")) if "data" in x else 0)
+                            if hr and float(hr) > 0:
+                                hr_vals.append(float(hr))
+                        if hr_vals:
+                            if not lap.get("min_heart_rate"):
+                                lap["min_heart_rate"] = int(round(min(hr_vals)))
+                            if not lap.get("max_heart_rate"):
+                                lap["max_heart_rate"] = int(round(max(hr_vals)))
 
                     if not lap.get("avg_power"):
                         val = calculate_weighted_average(lap_records, "power")
@@ -949,6 +973,15 @@ def find_segments_ruptures(records):
                 prev["avg_heart_rate"] = min(prev_hr, seg_hr)
             elif seg_hr:
                 prev["avg_heart_rate"] = seg_hr
+            # Merge min/max HR
+            prev_min = prev.get("min_heart_rate") or 999
+            seg_min = seg.get("min_heart_rate") or 999
+            prev_max = prev.get("max_heart_rate") or 0
+            seg_max = seg.get("max_heart_rate") or 0
+            if prev_min < 999 or seg_min < 999:
+                prev["min_heart_rate"] = min(prev_min, seg_min)
+            if prev_max > 0 or seg_max > 0:
+                prev["max_heart_rate"] = max(prev_max, seg_max)
             # Reclassify merged segment
             if prev["avg_speed"] < 1.0:
                 prev["type"] = "Rest"
@@ -1893,6 +1926,8 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
                 "avg_pace": l.get("avg_500m_split", "N/A"),
                 "avg_cadence": l.get("avg_cadence", 0),
                 "avg_heart_rate": l.get("avg_heart_rate", 0),
+                "min_heart_rate": l.get("min_heart_rate", 0),
+                "max_heart_rate": l.get("max_heart_rate", 0),
                 "dps": round(l.get("avg_speed", 0) / (l.get("avg_cadence", 0) / 60), 1) if l.get("avg_cadence", 0) > 0 else "N/A",
                 "type": l.get("type") or "Unknown"
             }
@@ -2074,9 +2109,10 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
     
     return json_path
 
-def generate_pacing_chart(data, output_dir, file_prefix):
+def generate_pacing_chart(data, output_dir, file_prefix, dark_mode=False):
     """
     Generate a Pace & Cadence chart using Matplotlib.
+    If dark_mode=True, use dark background for XHS/暗色主题.
     """
     if not MATPLOTLIB_AVAILABLE:
         print("Warning: matplotlib/pandas not installed. Skipping chart generation.")
@@ -2177,8 +2213,16 @@ def generate_pacing_chart(data, output_dir, file_prefix):
     fig, ax1 = plt.subplots(figsize=(12, 7), dpi=150)
     
     # Style
-    plt.style.use('seaborn-v0_8-whitegrid')
-    ax1.set_facecolor('#f8f9fa')
+    if dark_mode:
+        # Clean light-background chart for XHS — no spines, ticks, or labels
+        ax1.set_facecolor('#f8f9fa')
+        for spine in ax1.spines.values():
+            spine.set_visible(False)
+        ax1.grid(False)
+        fig.patch.set_facecolor('#f8f9fa')
+    else:
+        plt.style.use('seaborn-v0_8-whitegrid')
+        ax1.set_facecolor('#f8f9fa')
 
     # Add Summary Text Box
     session = data.get("session", {})
@@ -2218,49 +2262,70 @@ def generate_pacing_chart(data, output_dir, file_prefix):
         avg_cad = int(avg_cad_sess) if not np.isnan(avg_cad_sess) else 0
         avg_hr = int(avg_hr_sess) if avg_hr_sess and not np.isnan(avg_hr_sess) else 0
     
-    plt.subplots_adjust(top=0.98, bottom=0.15, right=0.85) # Reduced top margin as title is external
+    if dark_mode:
+        plt.subplots_adjust(top=0.99, bottom=0.08, right=0.99, left=0.01)
+    else:
+        plt.subplots_adjust(top=0.98, bottom=0.15, right=0.85)
     
     # Plot Split (Pace) on Left Y-axis
     color = '#1f77b4' # Blue
-    ax1.set_xlabel('Distance (m)')
-    ax1.set_ylabel('Pace (min/500m)', color=color)
-    
+    if dark_mode:
+        ax1.set_xlabel('Distance (m)', color='#666666')
+        ax1.set_ylabel('')
+        ax1.tick_params(axis='y', which='both', length=0, labelleft=False)
+        ax1.tick_params(axis='x', colors='#666666')
+    else:
+        label_color = '#333333'
+        ax1.set_xlabel('Distance (m)', color=label_color)
+        ax1.set_ylabel('Pace (min/500m)', color=color)
+        ax1.tick_params(axis='y', labelcolor=color)
+
     # Invert Y axis for pace (lower is faster) and handle format
     # Only plot where we have valid pace
     valid_pace = df[df["pace_smooth"] > 0]
     ax1.plot(valid_pace["distance"], valid_pace["pace_smooth"], color=color, linewidth=1.5, label="Pace")
-    
-    # Format Y ticks as mm:ss
-    def time_ticks(x, pos):
-        if np.isnan(x): return ""
-        m = int(x // 60)
-        s = int(x % 60)
-        return f"{m}:{s:02}"
-        
-    import matplotlib.ticker as ticker
-    ax1.yaxis.set_major_formatter(ticker.FuncFormatter(time_ticks))
-    ax1.tick_params(axis='y', labelcolor=color)
-    
+
+    if not dark_mode:
+        # Format Y ticks as mm:ss
+        def time_ticks(x, pos):
+            if np.isnan(x): return ""
+            m = int(x // 60)
+            s = int(x % 60)
+            return f"{m}:{s:02}"
+
+        import matplotlib.ticker as ticker
+        ax1.yaxis.set_major_formatter(ticker.FuncFormatter(time_ticks))
+
     ax1.invert_yaxis() # Faster pace (lower time) on top
     
     # Plot Cadence on Right Y-axis
     ax2 = ax1.twinx()  
     color2 = '#ff7f0e' # Orange
-    ax2.set_ylabel('Cadence (spm)', color=color2)
+    if dark_mode:
+        ax2.set_ylabel('')
+        ax2.set_yticks([])
+        ax2.tick_params(axis='y', which='both', length=0, labelleft=False, labelright=False)
+    else:
+        ax2.set_ylabel('Cadence (spm)', color=color2)
+        ax2.tick_params(axis='y', labelcolor=color2)
     # Filter SPM Data: Remove Rest Intervals to enable Straight Line Connection
     spm_df = df[~is_rest_mask]
     ax2.plot(spm_df["distance"], spm_df["cad_smooth"], color=color2, linewidth=1.5, alpha=0.7, label="Cadence")
-    ax2.tick_params(axis='y', labelcolor=color2)
     ax2.grid(False) # Turn off grid for second axis to avoid clutter
-    
+
     # Plot Heart Rate on 3rd Y-axis (Right, Offset)
     if df["hr_smooth"].max() > 0:
         ax3 = ax1.twinx()
         color3 = '#d62728' # Red
         ax3.spines["right"].set_position(("axes", 1.08)) # Offset by 8% of width
-        ax3.set_ylabel('Heart Rate (bpm)', color=color3)
+        if dark_mode:
+            ax3.set_ylabel('')
+            ax3.set_yticks([])
+            ax3.tick_params(axis='y', which='both', length=0, labelleft=False, labelright=False)
+        else:
+            ax3.set_ylabel('Heart Rate (bpm)', color=color3)
+            ax3.tick_params(axis='y', labelcolor=color3)
         ax3.plot(df["distance"], df["hr_smooth"], color=color3, linewidth=1.5, alpha=0.7, label="Heart Rate")
-        ax3.tick_params(axis='y', labelcolor=color3)
         ax3.grid(False)
     
     # Create Title with Metrics
@@ -2290,7 +2355,8 @@ def generate_pacing_chart(data, output_dir, file_prefix):
     
     title_str = " | ".join(title_parts)
     
-    plt.title(title_str, pad=20, fontsize=18, fontweight='bold', color='#333333')
+    if not dark_mode:
+        plt.title(title_str, pad=20, fontsize=18, fontweight='bold', color='#333333')
     
     # fig.tight_layout() # tight_layout often breaks with offset spines, handled by subplots_adjust  
     
@@ -2330,9 +2396,11 @@ def generate_pacing_chart(data, output_dir, file_prefix):
                          end_dist_val = df.loc[idx_e, "distance"]
                          
                          # Draw Vertical Start Line (Gray Dashed)
-                         ax1.axvline(x=start_dist_val, color='#888888', linestyle='--', linewidth=0.8, alpha=0.5)
-                         # Draw Vertical End Line (Gray Dashed) - "Workout End" indication for this segment
-                         ax1.axvline(x=end_dist_val, color='#888888', linestyle='--', linewidth=0.8, alpha=0.5)
+                         # Segment marker colors adapt to theme
+                         marker_color = '#5bc0be' if dark_mode else '#888888'
+                         marker_alpha = 0.35 if dark_mode else 0.5
+                         ax1.axvline(x=start_dist_val, color=marker_color, linestyle='--', linewidth=0.8, alpha=marker_alpha)
+                         ax1.axvline(x=end_dist_val, color=marker_color, linestyle='--', linewidth=0.8, alpha=marker_alpha)
 
                          # Add Label (Segment Number) centered in the segment
                          mid = (start_dist_val + end_dist_val) / 2
@@ -2340,12 +2408,12 @@ def generate_pacing_chart(data, output_dir, file_prefix):
                          # Only label if segment has significant length (e.g. > 50m) to avoid clutter
                          if (end_dist_val - start_dist_val) > 50:
                              # Label uses exact table index: i+1
-                             ax1.text(mid, 0.99, str(i + 1), 
-                                      transform=trans_markers, 
-                                      ha='center', va='top', 
-                                      fontsize=9, fontweight='bold', 
-                                      color='#444444',
-                                      bbox=dict(facecolor='white', alpha=0.5, edgecolor='none', pad=1))
+                             txt_color = '#444444'
+                             ax1.text(mid, 0.99, str(i + 1),
+                                      transform=trans_markers,
+                                      ha='center', va='top',
+                                      fontsize=12, fontweight='bold',
+                                      color=txt_color)
                  except Exception as e:
                      pass
 
@@ -3477,8 +3545,16 @@ def generate_xhs_image(data, chart_buffer, output_dir, file_prefix):
         print("Warning: Pillow not installed. Skipping XHS image generation.")
         return None
 
+    # Generate dark-themed chart specifically for XHS
+    dark_chart_buf = generate_pacing_chart(data, output_dir, file_prefix, dark_mode=True)
     chart_img = None
-    if chart_buffer:
+    if dark_chart_buf:
+        try:
+            chart_img = Image.open(dark_chart_buf)
+        except Exception as e:
+            print(f"Error loading dark chart from buffer: {e}")
+    elif chart_buffer:
+        # Fallback to light chart if dark generation fails
         try:
             chart_img = Image.open(chart_buffer)
         except Exception as e:
@@ -3490,7 +3566,7 @@ def generate_xhs_image(data, chart_buffer, output_dir, file_prefix):
     bg_gradient_mid = (26, 42, 74)
     bg_gradient_bot = (15, 32, 64)
     accent_cyan = (91, 192, 190)
-    gold_dark = (244, 162, 97)
+    gold_muted = (200, 180, 155)      # softer gold that fits dark theme
     chart_blue = (31, 119, 180)
     chart_orange = (255, 127, 14)
     chart_red = (214, 39, 40)
@@ -3513,7 +3589,7 @@ def generate_xhs_image(data, chart_buffer, output_dir, file_prefix):
     ]
     load_font = lambda size: _load_font(font_candidates, size)
 
-    font_hero_num = load_font(64)
+    font_hero_num = load_font(48)
     font_hero_unit = load_font(24)
     font_hero_label = load_font(18)
     font_title = load_font(28)
@@ -3521,15 +3597,15 @@ def generate_xhs_image(data, chart_buffer, output_dir, file_prefix):
     font_section = load_font(22)
     font_metric_val = load_font(28)
     font_metric_lbl = load_font(16)
-    font_table_hdr = load_font(14)
-    font_table_body = load_font(15)
+    font_table_hdr = load_font(16)
+    font_table_body = load_font(20)
     font_footer = load_font(18)
 
     # Compute session info
     session = data.get("session", {})
     laps = data.get("laps", [])
     is_indoor = session.get("sub_sport") == "indoor_rowing"
-    type_label = "🏋 室内划船" if is_indoor else "🛶 水上训练"
+    type_label = "🚣 室内划船" if is_indoor else "🚣 水上训练"
 
     start_t = session.get("start_time")
     date_str = ""
@@ -3572,30 +3648,29 @@ def generate_xhs_image(data, chart_buffer, output_dir, file_prefix):
     avg_hr = total_hr / count if count > 0 else 0
     avg_dps = total_dps / count if count > 0 else 0
 
-    # --- BLOCK 1: Hero (280px) ---
-    hero_height = 280
+    # --- BLOCK 1: Hero (230px) ---
+    hero_height = 230
     hero = Image.new("RGBA", (img_width, hero_height))
     hdraw = ImageDraw.Draw(hero)
     _draw_gradient(hdraw, img_width, hero_height, bg_gradient_top, bg_gradient_mid, bg_gradient_bot)
 
     with Pilmoji(hero) as p:
-        p.text((img_width//2, 40), type_label, fill=accent_cyan, font=font_title, anchor="ma")
-    hdraw.text((img_width//2, 75), date_str, fill=text_muted, font=font_date, anchor="ma")
+        p.text((img_width//2, 35), type_label, fill=accent_cyan, font=font_title, anchor="ma")
+    hdraw.text((img_width//2, 68), date_str, fill=text_muted, font=font_date, anchor="ma")
 
     col_centers = [int(img_width * 0.21), int(img_width * 0.5), int(img_width * 0.79)]
     hero_labels = ["距离", "用时", "平均配速"]
+    # Inline value + unit to avoid overlap
+    hero_texts = [
+        f"{total_dist:.1f} km",
+        f"{total_time:.0f} min",
+        f"{pace_str} /500m",
+    ]
+    hero_colors = [gold_muted, gold_muted, accent_cyan]
 
-    hdraw.text((col_centers[0], 160), f"{total_dist:.1f}", fill=gold_dark, font=font_hero_num, anchor="ma")
-    hdraw.text((col_centers[0], 195), "km", fill=gold_dark, font=font_hero_unit, anchor="ma")
-    hdraw.text((col_centers[0], 220), hero_labels[0], fill=text_muted, font=font_hero_label, anchor="ma")
-
-    hdraw.text((col_centers[1], 160), f"{total_time:.0f}", fill=gold_dark, font=font_hero_num, anchor="ma")
-    hdraw.text((col_centers[1], 195), "min", fill=gold_dark, font=font_hero_unit, anchor="ma")
-    hdraw.text((col_centers[1], 220), hero_labels[1], fill=text_muted, font=font_hero_label, anchor="ma")
-
-    hdraw.text((col_centers[2], 160), pace_str, fill=accent_cyan, font=font_hero_num, anchor="ma")
-    hdraw.text((col_centers[2], 195), "/500m", fill=accent_cyan, font=font_hero_unit, anchor="ma")
-    hdraw.text((col_centers[2], 220), hero_labels[2], fill=text_muted, font=font_hero_label, anchor="ma")
+    for i in range(3):
+        hdraw.text((col_centers[i], 125), hero_texts[i], fill=hero_colors[i], font=font_hero_num, anchor="ma")
+        hdraw.text((col_centers[i], 170), hero_labels[i], fill=text_muted, font=font_hero_label, anchor="ma")
 
     # --- BLOCK 2: Secondary Metrics (100px) ---
     metrics_height = 100
@@ -3610,70 +3685,106 @@ def generate_xhs_image(data, chart_buffer, output_dir, file_prefix):
         mdraw.text((cx, 22), metric_vals[i], fill=text_white, font=font_metric_val, anchor="ma")
         mdraw.text((cx, 60), metric_labels[i], fill=text_muted, font=font_metric_lbl, anchor="ma")
 
-    # --- BLOCK 3: Combined Chart (580px) ---
-    chart_height = 580
+    # --- BLOCK 3: Combined Chart (520px) ---
+    chart_height = 520
     chart_block = Image.new("RGBA", (img_width - 2 * padding, chart_height))
     cdraw = ImageDraw.Draw(chart_block)
-    cdraw.rounded_rectangle([(0, 0), (img_width - 2*padding, chart_height)], radius=14, fill=card_bg, outline=card_border, width=1)
-    cdraw.text(((img_width - 2*padding)//2, 16), "📊 配速 · 桨频 · 心率", fill=text_muted, font=font_section, anchor="ma")
+    cdraw.rounded_rectangle([(0, 0), (img_width - 2*padding, chart_height)], radius=14, fill=(248, 249, 250, 255), outline=card_border, width=1)
+
+    # Legend: 📊 配速 · 桨频 · 心率 — evenly spaced across card width
+    lx = (img_width - 2*padding) // 2
+    x_left = lx - 100
+    x_dot1 = lx - 50
+    x_mid  = lx
+    x_dot2 = lx + 50
+    x_right = lx + 100
+    with Pilmoji(chart_block) as p:
+        p.text((x_left, 22), "📊 配速", fill=chart_blue, font=font_section, anchor="mm")
+        p.text((x_dot1, 22), "·", fill=(160, 160, 170), font=font_section, anchor="mm")
+        p.text((x_mid, 22), "桨频", fill=chart_orange, font=font_section, anchor="mm")
+        p.text((x_dot2, 22), "·", fill=(160, 160, 170), font=font_section, anchor="mm")
+        p.text((x_right, 22), "心率", fill=chart_red, font=font_section, anchor="mm")
 
     if chart_img:
         chart_aspect = chart_img.height / chart_img.width
         chart_w = img_width - 2 * padding - 24
         chart_h = int(chart_w * chart_aspect)
-        chart_resized = chart_img.resize((chart_w, min(chart_h, chart_height - 120)), Image.LANCZOS)
-        chart_block.paste(chart_resized, (12, 50), chart_resized if chart_resized.mode == "RGBA" else None)
-
-        lx = (img_width - 2*padding) // 2
-        cdraw.text((lx - 120, chart_height - 50), "━ 配速", fill=chart_blue, font=font_metric_lbl, anchor="rm")
-        cdraw.text((lx, chart_height - 50), "━ 桨频", fill=chart_orange, font=font_metric_lbl, anchor="mm")
-        cdraw.text((lx + 120, chart_height - 50), "━ 心率", fill=chart_red, font=font_metric_lbl, anchor="lm")
+        chart_resized = chart_img.resize((chart_w, min(chart_h, chart_height - 56)), Image.LANCZOS)
+        chart_block.paste(chart_resized, (12, 42), chart_resized if chart_resized.mode == "RGBA" else None)
 
     # --- BLOCK 4: Segment Table ---
-    show_laps = [l for l in laps if l.get("type") != "Rest" and float(l.get("total_distance", 0)) > 50]
-    if not show_laps:
-        show_laps = [l for l in laps if float(l.get("total_distance", 0)) > 50]
-    table_row_h = 48
-    table_header_h = 36
-    table_height = table_header_h + len(show_laps) * table_row_h + 20
+    show_laps = laps
+    title_h = 48
+    header_h = 30
+    row_h = 52
+    table_height = title_h + header_h + len(show_laps) * row_h + 16
 
     table_block = Image.new("RGBA", (img_width - 2 * padding, table_height))
     tdraw = ImageDraw.Draw(table_block)
     tdraw.rounded_rectangle([(0, 0), (img_width - 2*padding, table_height)], radius=14, fill=card_bg, outline=card_border, width=1)
-    tdraw.text(((img_width - 2*padding)//2, 12), "📋 分段详情", fill=accent_cyan, font=font_section, anchor="ma")
+    # Section title
+    with Pilmoji(table_block) as p:
+        p.text(((img_width - 2*padding)//2, 20), "📋 分段详情", fill=accent_cyan, font=font_section, anchor="ma")
 
     cols = [
-        ("#", 0.04), ("时间", 0.18), ("距离", 0.18), ("配速", 0.18),
-        ("桨频", 0.14), ("心率", 0.14), ("DPS", 0.14)
+        ("#", 0.04), ("时间", 0.11), ("距离", 0.11), ("配速", 0.12),
+        ("桨频", 0.09), ("心率", 0.09), ("↓↑", 0.12), ("DPS", 0.12),
+        ("类型", 0.09)
     ]
-    col_x = [int((img_width - 2*padding) * sum(c[1] for c in cols[:j])) for j in range(len(cols))]
+    col_w = img_width - 2 * padding - 16
+    col_x = [8 + int(col_w * sum(c[1] for c in cols[:j])) + (8 if j > 0 else 0) for j in range(len(cols))]
 
-    header_y = 42
+    # Header row
+    header_y = title_h + 8
     for j, (label, _) in enumerate(cols):
         tdraw.text((col_x[j], header_y), label, fill=text_dim, font=font_table_hdr, anchor="lm")
 
+    first_data_y = title_h + header_h + 4
     for i, lap in enumerate(show_laps):
-        row_y = header_y + 28 + i * table_row_h
-        hr_val = float(lap.get("avg_heart_rate", 0))
-        spm_val = float(lap.get("avg_cadence", 0))
-        zone = classify_training_zone(hr_val, spm_val)
-        is_hot = zone in ("AT", "TR", "AN")
-        row_color = (255, 200, 140) if is_hot else (200, 214, 229)
+        row_center_y = first_data_y + i * row_h + row_h // 2
+        is_rest = lap.get("type") == "Rest"
+
+        if is_rest:
+            row_color = (110, 125, 140)
+        else:
+            hr_val = float(lap.get("avg_heart_rate", 0))
+            spm_val = float(lap.get("avg_cadence", 0))
+            zone = classify_training_zone(hr_val, spm_val)
+            is_hot = zone in ("AT", "TR", "AN")
+            row_color = (255, 195, 130) if is_hot else (210, 220, 235)
 
         time_sec = float(lap.get("total_timer_time", 0))
         dist_m = float(lap.get("total_distance", 0))
         pace = lap.get("avg_500m_split", "--:--")
-        spm = f"{float(lap.get('avg_cadence', 0)):.0f}"
-        hr = f"{float(lap.get('avg_heart_rate', 0)):.0f}"
         spd = float(lap.get("avg_speed", 0))
         cad = float(lap.get("avg_cadence", 0))
-        dps = f"{spd / (cad / 60):.1f}" if cad > 0 and spd > 0.5 else "-"
         time_str = f"{int(time_sec // 60)}:{int(time_sec % 60):02d}"
         dist_str = f"{dist_m / 1000:.2f}k"
+        seg_label = str(i + 1)
 
-        row_data = [str(i + 1), time_str, dist_str, pace, spm, hr, dps]
+        if is_rest:
+            spm_text = "-"
+            hr_avg = float(lap.get("avg_heart_rate", 0))
+            hr_text = f"{hr_avg:.0f}" if hr_avg > 0 else "-"
+            hr_ext = float(lap.get("min_heart_rate") or lap.get("avg_heart_rate", 0))
+            hr_ext_text = f"↓{hr_ext:.0f}" if hr_ext > 0 else "-"
+            dps_text = "-"
+        else:
+            spm_text = f"{cad:.0f}"
+            hr_avg = float(lap.get("avg_heart_rate", 0))
+            hr_text = f"{hr_avg:.0f}" if hr_avg > 0 else "-"
+            hr_ext = float(lap.get("max_heart_rate") or lap.get("avg_heart_rate", 0))
+            hr_ext_text = f"↑{hr_ext:.0f}" if hr_ext > 0 else "-"
+            dps_text = f"{spd / (cad / 60):.1f}" if cad > 0 and spd > 0.5 else "-"
+
+        if is_rest:
+            seg_type = "休息"
+        else:
+            seg_type = classify_training_zone(float(lap.get("avg_heart_rate", 0)), float(lap.get("avg_cadence", 0)))
+
+        row_data = [seg_label, time_str, dist_str, pace, spm_text, hr_text, hr_ext_text, dps_text, seg_type]
         for j, val in enumerate(row_data):
-            tdraw.text((col_x[j], row_y + 6), val, fill=row_color, font=font_table_body, anchor="lm")
+            tdraw.text((col_x[j], row_center_y), val, fill=row_color, font=font_table_body, anchor="lm")
 
     # --- BLOCK 5: Footer (80px) ---
     footer_height = 80
@@ -3683,7 +3794,7 @@ def generate_xhs_image(data, chart_buffer, output_dir, file_prefix):
     fdraw.text((img_width//2, 30), "#赛艇 #rowing #水上训练 #每日打卡", fill=text_dim, font=font_footer, anchor="ma")
 
     # --- ASSEMBLE ---
-    gap = 12
+    gap = 8
     total_height = hero_height + metrics_height + chart_height + table_height + footer_height + 5 * gap
     final_img = Image.new("RGB", (img_width, total_height))
     fdraw = ImageDraw.Draw(final_img)
