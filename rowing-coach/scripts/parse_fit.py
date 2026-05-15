@@ -3300,198 +3300,21 @@ def main():
     parser.add_argument("file_path", nargs='?', help="Path to the FIT file")
     parser.add_argument("--max-hr", type=int, default=MAX_HR, help="Maximum Heart Rate")
     parser.add_argument("--resting-hr", type=int, default=RESTING_HR, help="Resting Heart Rate")
-    parser.add_argument("--regen-share", metavar="MD_FILE", help="Regenerate share image from existing markdown report")
-    parser.add_argument("--regen-xhs", metavar="MD_FILE", help="Regenerate XHS image from existing markdown report")
+
     
     args = parser.parse_args()
 
-    # Mode: Regenerate share image from existing report
-    if args.regen_share:
-        md_path = args.regen_share
-        if not os.path.exists(md_path):
-            print(f"Error: Markdown file not found: {md_path}")
-            sys.exit(1)
-        
-        # Find corresponding JSON file
-        md_dir = os.path.dirname(md_path) or "."
-        md_base = os.path.basename(md_path)
-        
-        # Extract timestamp from filename (e.g., ERG_20260120_2117.md -> 20260120)
-        match = re.search(r'(\d{8})_(\d{4})', md_base)
-        if not match:
-            print(f"Error: Cannot extract timestamp from filename: {md_base}")
-            sys.exit(1)
-        
-        # Find matching JSON file
-        # Pattern: PREFIX_TIMESTAMP.json
-        timestamp_part = match.group(1) # YYYYMMDD
-        
-        json_files = [f for f in os.listdir(md_dir) if f.endswith('.json')]
-        json_path = None
-        
-        for jf in json_files:
-            # Check if filename contains the date part (robust enough for unique daily sessions usually)
-            # Or simpler: check if it matches the standard patterns
-            if match.group(0) in jf: # match.group(0) is YYYYMMDD_HHMM
-                 json_path = os.path.join(md_dir, jf)
-                 break
-        
-        if not json_path or not os.path.exists(json_path):
-            print(f"Error: Cannot find matching JSON file for {md_base} containing {match.group(0)}")
-            sys.exit(1)
-        
-        # Load JSON
-        with open(json_path, 'r', encoding='utf-8') as f:
-            json_data = json.load(f)
-        
-        # Extract review text from markdown
-        with open(md_path, 'r', encoding='utf-8') as f:
-            md_content = f.read()
-
-        # Extract Title from Markdown (first line: # 🚣‍♀️ Title | ...)
-        custom_header = None
-        # Look for first line starting with #
-        first_line_end = md_content.find('\n')
-        if first_line_end != -1:
-            first_line = md_content[:first_line_end]
-            # Simple split by |
-            if '|' in first_line:
-                parts = first_line.split('|')
-                # Take part before | and remove #
-                custom_header = parts[0].replace('#', '').strip()
-            
-        
-        review_start = md_content.find("## 👨‍🏫 Coach Review")
-        if review_start == -1:
-            review_start = md_content.find("## Coach Review")
-
-        review_text = ""
-        if review_start != -1:
-            review_section = md_content[review_start:]
-            # Find end (next --- or end of file)
-            review_end = review_section.find("\n---")
-            if review_end != -1:
-                review_text = review_section[:review_end].strip()
-            else:
-                review_text = review_section.strip()
-        
-        # Convert datetime strings back to datetime objects in processed_records
-        processed_records = json_data.get('processed_records', [])
-        for rec in processed_records:
-            if 'dt' in rec and isinstance(rec['dt'], str):
-                try:
-                    rec['dt'] = datetime.datetime.fromisoformat(rec['dt'])
-                except:
-                    pass
-        
-        # Reconstruct analyzed_data from JSON for chart generation
-        analyzed_data = {
-            'session': json_data.get('session', {}),
-            'laps': json_data.get('laps', []),
-            'processed_records': processed_records,
-            'location_name': json_data.get('location_name'),
-            'analysis': {
-                'best_500m': json_data.get('best_efforts', {}).get('best_500m', {}),
-                'best_1k': json_data.get('best_efforts', {}).get('best_1k', {}),
-                'best_2k': json_data.get('best_efforts', {}).get('best_2k', {}),
-                'best_4k': json_data.get('best_efforts', {}).get('best_4k', {}),
-                'best_10k': json_data.get('best_efforts', {}).get('best_10k', {}),
-            },
-            'heart_rate_analysis': json_data.get('heart_rate_analysis', {}),
-        }
-        
-        # Generate chart
-        f_prefix = os.path.splitext(md_base)[0]
-        chart_buffer = generate_pacing_chart(analyzed_data, md_dir, f_prefix)
-        
-        if chart_buffer:
-            chart_path = _save_chart(analyzed_data, chart_buffer, md_dir, f_prefix)
-            if chart_path:
-                print(f"✅ Chart image regenerated: {chart_path}")
-        else:
-            print("⚠️ Could not generate chart (missing processed_records in JSON)")
-
-        sys.exit(0)
-
-    # Mode: Regenerate XHS image from existing report
-    if args.regen_xhs:
-        md_path = args.regen_xhs
-        if not os.path.exists(md_path):
-            print(f"Error: Markdown file not found: {md_path}")
-            sys.exit(1)
-
-        md_dir = os.path.dirname(md_path) or "."
-        md_base = os.path.basename(md_path)
-
-        match = re.search(r'(\d{8})_(\d{4})', md_base)
-        if not match:
-            print(f"Error: Cannot extract timestamp from filename: {md_base}")
-            sys.exit(1)
-        ts_prefix = match.group(0)
-
-        json_path = None
-        for f in os.listdir(md_dir):
-            if ts_prefix in f and f.endswith('.json') and (f.startswith('ERG_') or f.startswith('ROW_')):
-                json_path = os.path.join(md_dir, f)
-                break
-        if not json_path or not os.path.exists(json_path):
-            print(f"Error: Cannot find JSON file for timestamp {ts_prefix}")
-            sys.exit(1)
-
-        with open(json_path) as f:
-            analyzed_data = json.load(f)
-
-        for r in analyzed_data.get("processed_records", []):
-            if isinstance(r.get("dt"), str):
-                r["dt"] = datetime.datetime.fromisoformat(r["dt"])
-
-        f_prefix = os.path.splitext(md_base)[0]
-        chart_buffer = generate_pacing_chart(analyzed_data, md_dir, f_prefix)
-
-        if chart_buffer:
-            xhs_path = generate_xhs_image(analyzed_data, chart_buffer, md_dir, f_prefix)
-            if xhs_path:
-                print(f"✅ XHS image regenerated: {xhs_path}")
-        else:
-            print("⚠️ Could not generate chart")
-
-        sys.exit(0)
-
-    # Normal mode: Parse FIT file
+    # Normal mode: Parse FIT file → JSON only
     if not args.file_path:
-        parser.error("file_path is required unless using --regen-share")
+        parser.error("file_path is required")
     
     parsed_data = parse_fit(args.file_path)
     
     if parsed_data:
         analyzed_data = analyze_rowing(parsed_data, args.max_hr, args.resting_hr)
-
-        # Enrich session with weather/city before JSON export
         _enrich_session_weather(analyzed_data)
-
-        # Export analysis JSON (Keep this as an artifact)
         json_path = export_analysis_json(analyzed_data, args.file_path, args.max_hr, args.resting_hr)
         print(f"✅ Analysis JSON generated: {json_path}")
-
-        # Generate Report
-        post_path, chart_buffer, review_text, image_title = generate_training_report(analyzed_data, args.file_path, args.max_hr, args.resting_hr)
-        
-        chart_path = None
-        xhs_path = None
-        if post_path and chart_buffer:
-             md_dir = os.path.dirname(post_path)
-             f_prefix = os.path.splitext(os.path.basename(post_path))[0]
-             chart_path = _save_chart(analyzed_data, chart_buffer, md_dir, f_prefix)
-             chart_buffer.seek(0)
-             xhs_path = generate_xhs_image(analyzed_data, chart_buffer, md_dir, f_prefix)
-
-        print(f"\n✅ Training analysis complete!")
-        print(f"📝 Markdown: {post_path}")
-        if chart_path:
-            print(f"🖼️ Chart Image: {chart_path}")
-        if xhs_path:
-            print(f"📱 XHS Image: {xhs_path}")
-
     else:
         sys.exit(1)
 
