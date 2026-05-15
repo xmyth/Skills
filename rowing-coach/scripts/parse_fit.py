@@ -2111,6 +2111,97 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
     
     return json_path
 
+def generate_build_report(data, output_dir, file_prefix, review_text, xhs_post):
+    """Generate MD report with review and XHS post."""
+    s = data.get("session", {}); laps = data.get("laps", [])
+    indoor = s.get("sub_sport") == "indoor_rowing"
+    tl = "Indoor Rowing" if indoor else "On-Water Rowing"
+    mp = os.path.join(output_dir, f"{file_prefix}.md")
+    td = sum(float(l.get("total_distance",0)) for l in laps)/1000
+    tt = sum(float(l.get("total_timer_time",0)) for l in laps)/60
+    cmt=cwd=cps=hrs=0
+    for l in laps:
+        t=float(l.get("total_timer_time",0))
+        if l.get("type","Work")!="Rest":
+            cmt+=t; cwd+=float(l.get("total_distance",0))
+            cps+=float(l.get("avg_cadence",0))*t
+            hrs+=float(l.get("avg_heart_rate",0)or 0)*t
+    ac=int(cps/cmt)if cmt>0 else 0; ah=int(hrs/cmt)if cmt>0 else 0
+    asp=cwd/cmt if cmt>0 else 0; ap=calculate_split(asp)
+    with open(mp, "w") as f:
+        f.write(f"# {tl} | {td:.1f}km Full Analysis\n\n")
+        if s.get("start_time"):
+            try:
+                dt = datetime.datetime.fromisoformat(str(s.get("start_time")))
+                dtl = dt + datetime.timedelta(hours=8)
+                ts = dtl.strftime("%Y-%m-%d %H:%M")
+                f.write(f"* **Date**: {ts}\n")
+            except: pass
+        ln = data.get("location_name")
+        if ln: f.write(f"* **Location**: {ln}\n\n")
+        f.write("## Summary\n\n")
+        f.write(f"*   **Work Distance**: {cwd/1000:.2f} km\n")
+        f.write(f"*   **Total Time (Elapsed)**: {tt:.1f} min\n")
+        f.write(f"*   **Moving Time**: {cmt/60:.1f} min\n")
+        f.write(f"*   **Avg Pace**: {ap} /500m\n")
+        f.write(f"*   **Avg Rate**: {ac} spm\n")
+        f.write(f"*   **Avg HR**: {ah} bpm\n")
+        f.write("\n---\n")
+        f.write("## Pacing Chart\n\n")
+        f.write(f"![Chart]({file_prefix}.png)\n")
+        f.write("\n---\n")
+        f.write("## Full Segments\n\n")
+        f.write("| # | Time | Distance | Pace/500m | SPM | HR | \u2193\u2191 | DPS | Type |\n")
+        f.write("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n")
+        for i, lap in enumerate(laps):
+            n = lap.get("lap_number", i+1)
+            ds = float(lap.get("total_timer_time", 0))
+            m = int(ds // 60); s = int(ds % 60)
+            dur = f"{m}:{s:02d}"
+            if ds >= 3600:
+                h = int(ds // 3600)
+                m = int((ds % 3600) // 60)
+                dur = f"{h}:{m:02d}:{s:02d}"
+            dst = float(lap.get("total_distance", 0))
+            dd = f"{int(round(dst))}m"
+            pc = lap.get("avg_500m_split", "-")
+            cd = float(lap.get("avg_cadence", 0) or 0)
+            cs = str(int(cd)) if cd > 0 else "-"
+            hrv = float(lap.get("avg_heart_rate", 0) or 0)
+            hs = str(int(hrv)) if hrv > 0 else "-"
+            spd = float(lap.get("avg_speed", 0))
+            dp = calculate_dps(spd, cd) if cd > 0 else 0
+            dss = f"{dp:.1f}m" if dp > 0 else "-"
+            ir = lap.get("type") == "Rest"
+            if ir:
+                nt = "Rest"
+                hn = lap.get("min_heart_rate") or hrv
+                he = f"\u2193{int(hn)}" if hn > 0 else "-"
+                cs = "-"; dss = "-"
+            else:
+                nt = classify_training_zone(hrv, cd)
+                hx = lap.get("max_heart_rate") or hrv
+                he = f"\u2191{int(hx)}" if hx > 0 else "-"
+            rw = f"| {n} | {dur} | {dd} | {pc} | {cs} | {hs} | {he} | {dss} | {nt} |"
+            f.write(rw + "\n")
+        f.write("\n---\n")
+        if not indoor:
+            f.write("## Best Efforts\n\n")
+            an = data.get("analysis", {})
+            for k, name in [("best_500m","500m"),("best_1k","1000m"),("best_2k","2000m"),("best_4k","4000m"),("best_10k","10000m")]:
+                be = an.get(k)
+                if be: f.write(f"*   **Fastest {name}**: `{be[chr(39)+chr(112)+chr(97)+chr(99)+chr(101)+chr(39)]}` ({be[chr(39)+chr(116)+chr(105)+chr(109)+chr(101)+chr(39)]})\n")
+            if not any(an.get(k) for k,_ in [("best_500m",""),("best_1k",""),("best_2k",""),("best_4k",""),("best_10k","")]):
+                f.write("Insufficient data for best efforts.\n")
+            f.write("\n---\n")
+        f.write("## Coach Review\n\n")
+        f.write(review_text + "\n\n")
+        if xhs_post:
+            f.write("---\n")
+            f.write("## Social Media Post\n\n")
+            f.write(xhs_post + "\n")
+    return mp
+
 def generate_pacing_chart(data, output_dir, file_prefix, dark_mode=False):
     """
     Generate a Pace & Cadence chart using Matplotlib.
@@ -3300,6 +3391,9 @@ def main():
     parser.add_argument("file_path", nargs='?', help="Path to the FIT file")
     parser.add_argument("--max-hr", type=int, default=MAX_HR, help="Maximum Heart Rate")
     parser.add_argument("--resting-hr", type=int, default=RESTING_HR, help="Resting Heart Rate")
+    parser.add_argument("--build-report", metavar="JSON_FILE", help="Build MD + images from JSON analysis")
+    parser.add_argument("--review", type=str, default="", help="Coach review text (for --build-report)")
+    parser.add_argument("--xhs-post", type=str, default="", help="XHS social media post text (for --build-report)")
 
     
     args = parser.parse_args()
@@ -3317,6 +3411,63 @@ def main():
         print(f"✅ Analysis JSON generated: {json_path}")
     else:
         sys.exit(1)
+
+    # Mode: Build report from JSON
+    if args.build_report:
+        json_path = args.build_report
+        if not os.path.exists(json_path):
+            print(f"Error: JSON file not found: {json_path}")
+            sys.exit(1)
+
+        with open(json_path) as f:
+            json_data = json.load(f)
+
+        processed_records = json_data.get('processed_records', [])
+        for rec in processed_records:
+            if 'dt' in rec and isinstance(rec['dt'], str):
+                try:
+                    rec['dt'] = datetime.datetime.fromisoformat(rec['dt'])
+                except:
+                    pass
+
+        analyzed_data = {
+            'session': json_data.get('session', {}),
+            'laps': json_data.get('laps', []),
+            'processed_records': processed_records,
+            'location_name': json_data.get('location_name'),
+            'analysis': {
+                'best_500m': json_data.get('best_efforts', {}).get('best_500m', {}),
+                'best_1k': json_data.get('best_efforts', {}).get('best_1k', {}),
+                'best_2k': json_data.get('best_efforts', {}).get('best_2k', {}),
+                'best_4k': json_data.get('best_efforts', {}).get('best_4k', {}),
+                'best_10k': json_data.get('best_efforts', {}).get('best_10k', {}),
+            },
+            'heart_rate_analysis': json_data.get('heart_rate_analysis', {}),
+        }
+
+        json_dir = os.path.dirname(json_path) or "."
+        json_base = os.path.basename(json_path)
+        f_prefix = os.path.splitext(json_base)[0]
+
+        md_path = generate_build_report(analyzed_data, json_dir, f_prefix, args.review, args.xhs_post)
+        print(f"📝 Markdown: {md_path}")
+
+        chart_buffer = generate_pacing_chart(analyzed_data, json_dir, f_prefix)
+        if chart_buffer:
+            chart_path = _save_chart(analyzed_data, chart_buffer, json_dir, f_prefix)
+            if chart_path:
+                print(f"🖼️ Chart Image: {chart_path}")
+                chart_buffer.seek(0)
+
+        xhs1 = generate_xhs_page1(analyzed_data, json_dir, f_prefix)
+        if xhs1:
+            print(f"📱 XHS Page 1: {xhs1}")
+
+        xhs2 = generate_xhs_page2(analyzed_data, json_dir, f_prefix, args.review)
+        if xhs2:
+            print(f"📱 XHS Page 2: {xhs2}")
+
+        sys.exit(0)
 
 def _save_chart(data, chart_buffer, output_dir, file_prefix):
     """Save combined chart image. Returns chart_path or None."""
