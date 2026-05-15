@@ -2202,7 +2202,36 @@ def generate_build_report(data, output_dir, file_prefix, review_text, xhs_post):
             f.write(xhs_post + "\n")
     return mp
 
-def generate_pacing_chart(data, output_dir, file_prefix, dark_mode=False):
+def _make_single_chart(df, chart_type, dark_mode=False):
+    fig, ax = plt.subplots(figsize=(12, 3), dpi=150)
+    ax.set_facecolor("#f8f9fa")
+    for spine in ax.spines.values(): spine.set_visible(False)
+    ax.grid(False)
+    fig.patch.set_facecolor("#f8f9fa")
+    ax.tick_params(axis="y", which="both", length=0, labelleft=False)
+    ax.tick_params(axis="x", colors="#666666")
+    ax.set_xlabel("Distance (m)", color="#666666")
+    plt.subplots_adjust(top=0.99, bottom=0.15, right=0.99, left=0.01)
+    if chart_type == "pace":
+        color = "#1f77b4"
+        valid = df[df["pace_smooth"] > 0]
+        ax.plot(valid["distance"], valid["pace_smooth"], color=color, linewidth=1.5)
+        ax.invert_yaxis()
+    elif chart_type == "spm":
+        color = "#ff7f0e"
+        spm_df = df[df["cad_smooth"] > 0]
+        ax.plot(spm_df["distance"], spm_df["cad_smooth"], color=color, linewidth=1.5)
+    elif chart_type == "hr":
+        color = "#d62728"
+        hr_df = df[df["hr_smooth"] > 0]
+        ax.plot(hr_df["distance"], hr_df["hr_smooth"], color=color, linewidth=1.5)
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png")
+    plt.close()
+    buf.seek(0)
+    return buf
+
+def generate_pacing_chart(data, output_dir, file_prefix, dark_mode=False, chart_type=None):
     """
     Generate a Pace & Cadence chart using Matplotlib.
     If dark_mode=True, use dark background for XHS/暗色主题.
@@ -2301,6 +2330,10 @@ def generate_pacing_chart(data, output_dir, file_prefix, dark_mode=False):
     df["pace_smooth"] = df["pace_sec"]
     df["cad_smooth"] = df["cadence"]
     df["hr_smooth"] = df["heart_rate"]
+
+    # Individual chart mode: single metric only
+    if chart_type:
+        return _make_single_chart(df, chart_type, dark_mode)
 
     # Create Plot
     fig, ax1 = plt.subplots(figsize=(12, 7), dpi=150)
@@ -3598,6 +3631,124 @@ def _fetch_weather(lat, lon, dt):
         return weather_str
     except Exception:
         return ""
+
+def generate_xhs_page1(data, output_dir, file_prefix):
+    if not PIL_AVAILABLE: return None
+    session = data.get("session", {}); laps = data.get("laps", [])
+    is_indoor = session.get("sub_sport") == "indoor_rowing"
+    type_label = "\U0001f6a3 \u5ba4\u5185\u5212\u8239" if is_indoor else "\U0001f6a3 \u6c34\u4e0a\u8bad\u7ec3"
+    img_width = 1080; padding = 28
+    bg_top = (10,22,40); bg_mid = (26,42,74); bg_bot = (15,32,64)
+    accent = (91,192,190); gold = (200,180,155)
+    c_blue = (31,119,180); c_orange = (255,127,14); c_red = (214,39,40)
+    t_white = (232,236,241); t_muted = (136,153,170); t_dim = (85,102,119)
+    c_bg = (255,255,255,13); c_border = (255,255,255,20)
+    font_list = [
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/Library/Fonts/Arial Unicode.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+    ]
+    lf = lambda sz: _load_font(font_list, sz)
+    ft_hero = lf(48); ft_unit = lf(24); ft_label = lf(18)
+    ft_title = lf(28); ft_date = lf(20)
+    ft_sec = lf(22); ft_mv = lf(28); ft_ml = lf(16)
+    ft_footer = lf(18)
+    st = session.get("start_time"); date_str = ""
+    if st:
+        try:
+            if isinstance(st, str): dt = datetime.datetime.fromisoformat(st)
+            else: dt = st
+            dt = dt + datetime.timedelta(hours=8)
+            wd = ["\u4e00","\u4e8c","\u4e09","\u56db","\u4e94","\u516d","\u65e5"][dt.weekday()]
+            h = dt.hour
+            tod = "\u6e05\u6668" if 5<=h<9 else ("\u4e0a\u5348" if 9<=h<12 else ("\u4e0b\u5348" if 12<=h<18 else "\u665a\u95f4"))
+            date_str = f"{dt.year}\u5e74{dt.month}\u6708{dt.day}\u65e5 \u00b7 \u661f\u671f{wd} \u00b7 {tod}"
+            city = session.get("city",""); weather = session.get("weather","")
+            if city: date_str += f" \u00b7 {city}"
+            if weather: date_str += weather
+        except: pass
+    wlaps = [l for l in laps if l.get("type")!="Rest"]
+    td = sum(float(l.get("total_distance",0)) for l in laps)/1000
+    tt = sum(float(l.get("total_timer_time",0)) for l in laps)/60
+    aps = 0
+    if wlaps:
+        speeds = [float(l.get("avg_speed",0)) for l in wlaps if float(l.get("avg_speed",0))>0.5]
+        if speeds: aps = 500/(sum(speeds)/len(speeds))
+    ps = f"{int(aps//60)}:{int(aps%60):02d}" if aps>0 else "--:--"
+    tspm=thr=tdps=cnt=0
+    for l in laps:
+        spm=float(l.get("avg_cadence",0)); hr=float(l.get("avg_heart_rate",0))
+        spd=float(l.get("avg_speed",0))
+        if spm>0:
+            tspm+=spm; cnt+=1
+            if spd>0.5: tdps+=spd/(spm/60)
+            if hr>0: thr+=hr
+    asp = tspm/cnt if cnt>0 else 0; ahr = thr/cnt if cnt>0 else 0; adp = tdps/cnt if cnt>0 else 0
+    hero_h = 230
+    hero = Image.new("RGBA", (img_width, hero_h))
+    hd = ImageDraw.Draw(hero)
+    _draw_gradient(hd, img_width, hero_h, bg_top, bg_mid, bg_bot)
+    with Pilmoji(hero) as p:
+        p.text((img_width//2, 35), type_label, fill=accent, font=ft_title, anchor="ma")
+    with Pilmoji(hero) as p:
+        p.text((img_width//2, 68), date_str, fill=t_muted, font=ft_date, anchor="ma")
+    cols = [int(img_width*0.21), int(img_width*0.5), int(img_width*0.79)]
+    hlbl = ["\u8ddd\u79bb", "\u7528\u65f6", "\u5e73\u5747\u914d\u901f"]
+    htxt = [f"{td:.1f} km", f"{tt:.0f} min", f"{ps} /500m"]
+    hcol = [gold, gold, accent]
+    for i in range(3):
+        hd.text((cols[i], 125), htxt[i], fill=hcol[i], font=ft_hero, anchor="ma")
+        hd.text((cols[i], 170), hlbl[i], fill=t_muted, font=ft_label, anchor="ma")
+    met_h = 100
+    mcard = Image.new("RGBA", (img_width-2*padding, met_h))
+    md = ImageDraw.Draw(mcard)
+    md.rounded_rectangle([(0,0),(img_width-2*padding,met_h)], radius=14, fill=c_bg, outline=c_border, width=1)
+    mlbl = ["\u6868\u9891 /min", "\u5fc3\u7387 bpm", "DPS m/\u6868"]
+    mval = [f"{asp:.1f}", f"{ahr:.0f}", f"{adp:.1f}"]
+    for i in range(3):
+        cx = (img_width-2*padding)*(0.17+i*0.33)
+        md.text((cx, 22), mval[i], fill=t_white, font=ft_mv, anchor="ma")
+        md.text((cx, 60), mlbl[i], fill=t_muted, font=ft_ml, anchor="ma")
+    chart_cards = []
+    chart_h = 280
+    cw = img_width - 2*padding - 40
+    ch = chart_h - 48
+    types = [("pace", c_blue, "\u914d\u901f"), ("spm", c_orange, "\u6868\u9891"), ("hr", c_red, "\u5fc3\u7387")]
+    for ct, clr, lbl in types:
+        buf = generate_pacing_chart(data, output_dir, file_prefix, dark_mode=True, chart_type=ct)
+        if buf:
+            cimg = Image.open(buf)
+            card = Image.new("RGBA", (img_width-2*padding, chart_h))
+            cd = ImageDraw.Draw(card)
+            cd.rounded_rectangle([(0,0),(img_width-2*padding,chart_h)], radius=14, fill=(248,249,250,255), outline=c_border, width=1)
+            cd.rectangle([(0,0),(4,chart_h)], fill=clr)
+            cd.text((20,12), lbl, fill=clr, font=ft_sec, anchor="lm")
+            resized = cimg.resize((cw, ch), Image.LANCZOS)
+            card.paste(resized, (20, 36))
+            chart_cards.append(card)
+    ft_h = 80
+    footer = Image.new("RGBA", (img_width, ft_h))
+    fd = ImageDraw.Draw(footer)
+    _draw_gradient(fd, img_width, ft_h, bg_bot, bg_bot, bg_bot)
+    fd.text((img_width//2, 20), "1/2", fill=t_muted, font=ft_footer, anchor="ma")
+    fd.text((img_width//2, 48), "#\u8d5b\u8247 #rowing #\u6c34\u4e0a\u8bad\u7ec3 #\u6bcf\u65e5\u6253\u5361", fill=t_dim, font=ft_footer, anchor="ma")
+    gap = 8
+    total_h = hero_h + met_h + len(chart_cards)*chart_h + ft_h + (len(chart_cards)+3)*gap
+    final = Image.new("RGB", (img_width, total_h))
+    fd2 = ImageDraw.Draw(final)
+    _draw_gradient(fd2, img_width, total_h, bg_top, bg_mid, bg_bot)
+    y = 0
+    final.paste(hero, (0,y), hero); y += hero_h + gap
+    final.paste(mcard, (padding,y), mcard); y += met_h + gap
+    for cc in chart_cards:
+        final.paste(cc, (padding,y), cc); y += chart_h + gap
+    final.paste(footer, (0, total_h-ft_h), footer)
+    path = os.path.join(output_dir, f"{file_prefix}_XHS_1.png")
+    final.save(path)
+    return path
 
 def generate_xhs_image(data, chart_buffer, output_dir, file_prefix):
     """
