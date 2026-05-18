@@ -24,35 +24,26 @@ python3 scripts/parse_fit.py <path_to_fit_file>
 - `ROW_<timestamp>.png` or `ERG_<timestamp>.png` - Pacing chart image
 - `ROW_<timestamp>_XHS.png` or `ERG_<timestamp>_XHS.png` - Xiaohongshu training image
 
-### Step 2: Generate Professional Coach Review
+### Step 2: Generate Coach Review + XHS Post + Build Report
 **IMMEDIATELY** after Step 1:
 1. Read the generated JSON analysis file (`*.json`)
 2. Use `references/coach_guidelines.md` for analysis criteria and coaching style
-3. Generate a professional, data-driven review in English following the structure:
-   - **Training Summary**: Distance, time, training type
-   - **Highlights**: Specific strengths with data references
-   - **Improvements**: Technical gaps with segment references
-   - **Next Session Advice**: Actionable drill or focus
+3. Generate a professional, data-driven review in **Chinese** following the structure:
+   - **Highlights** (🌟 亮点): Specific strengths with data references
+   - **Improvements** (⚡ 改进): Technical gaps with segment references
+   - **Next Session** (🎯 下次训练): Actionable drill or focus
+4. Generate a Xiaohongshu social media post in Chinese with detailed segment breakdown
+5. Build all outputs:
+```bash
+python3 scripts/parse_fit.py --build-report <file.json> \
+    --review "### Highlights\n- ...\n### Improvements\n- ...\n### Next Session\n- ..." \
+    --xhs-post "..."
+```
 
-### Step 3: Update Report
-Replace the placeholder review in the generated `.md` file with your professional analysis.
+### Step 3: Cleanup
+JSON preserved. No other temp artifacts.
 
-### Step 4: Generate Xiaohongshu Post
-**IMMEDIATELY** after Step 4:
-1. Read the fully updated `.md` report (now including the professional coach review).
-2. Generate a social media post suitable for Xiaohongshu (Red Note) in Chinese.
-3. The post should include:
-    - **Catchy Title**: Use emojis and an engaging hook.
-    - **Key Stats**: Distance, Total Time, Average Pace, Stroke Rate, Heart Rate, DPS.
-    - **Detailed Segments**: A compact segment-by-segment breakdown showing each segment's distance, pace, SPM, and HR. Rest segments should be clearly marked.
-    - **Coach's "One Thing"**: A single, impactful piece of advice or encouragement from the review.
-    - **Tags**: Relevant hashtags (e.g., #赛艇 #Rowing #Concept2 #训练打卡).
-4. Append this content to the end of the `.md` file under a new header `## Social Media Post`.
-
-### Step 5: Cleanup
-Remove any temporary artifacts. The JSON analysis file is preserved to support `--regen-share` regeneration.
-
-> **IMPORTANT**: All five steps must be completed automatically in a single invocation. The `*_XHS.png` training image is generated automatically by the script during Step 1.
+> **IMPORTANT**: All three steps must be completed automatically in a single invocation.
 
 ## Adaptive Segmentation Algorithm
 
