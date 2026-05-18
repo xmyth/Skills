@@ -3590,12 +3590,13 @@ def main():
     if parsed_data:
         analyzed_data = analyze_rowing(parsed_data, args.max_hr, args.resting_hr)
         _enrich_session_weather(analyzed_data)
-        # Normalize timezone: Concept2 uses UTC, SpdCoach already local
+        # Normalize timezone to UTC+8: FIT files may use UTC or local time.
+        # If the hour is 0-4, assume UTC (add 8h). Otherwise assume already local.
         session = analyzed_data.get("session", {})
-        if session.get("sub_sport") == "indoor_rowing":
-            st = session.get("start_time")
-            if st:
-                if isinstance(st, str): st = datetime.datetime.fromisoformat(st)
+        st = session.get("start_time")
+        if st:
+            if isinstance(st, str): st = datetime.datetime.fromisoformat(st)
+            if st.hour < 5 or st.hour >= 20:
                 session["start_time"] = (st + datetime.timedelta(hours=8)).isoformat()
         json_path = export_analysis_json(analyzed_data, args.file_path, args.max_hr, args.resting_hr)
         print(f"✅ Analysis JSON generated: {json_path}")
