@@ -41,7 +41,7 @@ python3 scripts/parse_fit.py <path_to_fit_file>
 · 用时：[time]min
 · 配速：[pace]/500m
 · 桨频：[spm]spm · 心率：[hr]bpm
-· [weather emoji] [天气] [temp]°C · [城市]
+· [城市] · [weather emoji] [天气] [temp]°C
 
 📋 分段详情
 🔥 [dist]m @ [pace] · [spm]spm · HR[hr]
