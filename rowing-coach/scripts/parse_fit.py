@@ -4196,18 +4196,22 @@ def generate_combined_chart_image(data, chart_buf):
         pilmoji.text((padding, 10), "📊 Segments", font=font_header, fill=text_color)
     
     # Headers
-    headers = ["#", "Time", "Dist", "Pace", "SPM", "HR", "DPS", "Type"]
-    col_widths =     [90, 180, 160, 180, 110, 110, 140, 150]
+    headers = ["#", "Time", "Dist", "Pace", "SPM", "HR", "↓↑", "DPS", "Type"]
+    col_widths =     [90, 160, 140, 160, 100, 100, 100, 120, 130]
     
-    curr_x = padding
+    # Column center positions for centered text
+    col_centers = []
+    running = padding
+    for w in col_widths:
+        col_centers.append(running + w // 2)
+        running += w
+
     header_y = 70
-    
     for i, h in enumerate(headers):
-        d.text((curr_x, header_y), h, font=font_small, fill="#888888")
-        curr_x += col_widths[i]
-        
+        d.text((col_centers[i], header_y), h, font=font_small, fill="#888888", anchor="mm")
+
     y = header_y + 50
-    
+
     # Rows
     for i, lap in enumerate(laps):
         num = str(lap.get("lap_number", i+1))
@@ -4219,17 +4223,17 @@ def generate_combined_chart_image(data, chart_buf):
              h = int(dur_s // 3600)
              m = int((dur_s % 3600) // 60)
              dur_str = f"{h}:{m:02}:{s:02}"
-        
+
         dist_str = f"{int(round(lap.get('total_distance', 0)))}m"
         pace = str(lap.get("avg_500m_split", "-"))
         spm_val = int(lap.get("avg_cadence", 0))
         spm = str(spm_val) if spm_val > 0 else "-"
-        
+
         avg_spd = lap.get("avg_speed", 0)
         cad = lap.get("avg_cadence", 0)
         dps = avg_spd / (cad/60) if cad > 0 else 0
         dps_str = f"{dps:.1f}" if dps > 0 else "-"
-        
+
         l_type = "Work"
         if lap.get("type") == "Rest": l_type = "Rest"
         else:
@@ -4240,17 +4244,31 @@ def generate_combined_chart_image(data, chart_buf):
 
         hr_val = int(lap.get("avg_heart_rate", 0) or 0)
         hr_str = str(hr_val) if hr_val > 0 else "-"
-        
-        row_vals = [num, dur_str, dist_str, pace, spm, hr_str, dps_str, l_type]
-        
-        curr_x = padding
-        if i % 2 == 1:
+        # ↓↑ column: min HR for rest, max HR for work
+        is_rest = lap.get("type") == "Rest"
+        if is_rest:
+            ext_hr = int(lap.get("min_heart_rate") or hr_val or 0)
+            ext_str = f"↓{ext_hr}" if ext_hr > 0 else "-"
+            spm = "-"
+            dps_str = "-"
+        else:
+            ext_hr = int(lap.get("max_heart_rate") or hr_val or 0)
+            ext_str = f"↑{ext_hr}" if ext_hr > 0 else "-"
+
+        row_vals = [num, dur_str, dist_str, pace, spm, hr_str, ext_str, dps_str, l_type]
+
+        if is_rest:
+            d.rectangle([(padding, y-10), (img_width-padding, y+35)], fill="#EBEEF2")
+            row_text_color = "#999999"
+        elif i % 2 == 1:
             d.rectangle([(padding, y-10), (img_width-padding, y+35)], fill="#F8F9FA")
-            
+            row_text_color = text_color
+        else:
+            row_text_color = text_color
+
         for j, val in enumerate(row_vals):
-            d.text((curr_x, y), val, font=font_body, fill=text_color)
-            curr_x += col_widths[j]
-            
+            d.text((col_centers[j], y + 12), val, font=font_body, fill=row_text_color, anchor="mm")
+
         y += 50
 
     # 6. Composite
