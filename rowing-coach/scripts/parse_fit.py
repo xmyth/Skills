@@ -1910,7 +1910,9 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
             "start_time": session.get("start_time", ""),
             "location": data.get("location_name") or session.get("city") or "Unknown",
             "city": session.get("city", ""),
-            "weather": session.get("weather", "")
+            "weather": session.get("weather", ""),
+            "estimated_current_mps": data.get("estimated_current_mps", 0),
+            "current_direction": data.get("current_direction", "")
         },
         "aggregated_metrics": {
             "avg_dps": round(avg_dps, 1),
@@ -1931,7 +1933,9 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
                 "min_heart_rate": l.get("min_heart_rate", 0),
                 "max_heart_rate": l.get("max_heart_rate", 0),
                 "dps": round(l.get("avg_speed", 0) / (l.get("avg_cadence", 0) / 60), 1) if l.get("avg_cadence", 0) > 0 else "N/A",
-                "type": l.get("type") or "Unknown"
+                "type": l.get("type") or "Unknown",
+                "direction": l.get("direction", ""),
+                "current_mps": l.get("current_mps", 0)
             }
             for i, l in enumerate(laps)
         ],
@@ -3463,6 +3467,8 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val):
                 dps_str = "-"
             else:
                 note = classify_training_zone(hr, cad, max_hr_val, resting_hr_val)
+                if lap.get("direction"):
+                    note = lap["direction"] + " " + note
                 hr_max = lap.get("max_heart_rate") or hr
                 hr_ext = f"↑{int(hr_max)}" if hr_max > 0 else "-"
 
@@ -3590,6 +3596,7 @@ def main():
     if parsed_data:
         analyzed_data = analyze_rowing(parsed_data, args.max_hr, args.resting_hr)
         _enrich_session_weather(analyzed_data)
+        _estimate_current(analyzed_data)
         # Normalize timezone to UTC+8: FIT files may use UTC or local time.
         # If the hour is 0-4, assume UTC (add 8h). Otherwise assume already local.
         session = analyzed_data.get("session", {})
@@ -3643,6 +3650,80 @@ def _draw_gradient(draw, width, height, top_color, mid_color, bot_color):
             g = int(mid_color[1] + (bot_color[1] - mid_color[1]) * t)
             b = int(mid_color[2] + (bot_color[2] - mid_color[2]) * t)
         draw.line([(0, y), (width, y)], fill=(r, g, b))
+
+def _estimate_current(data):
+    """Estimate water current speed from opposite-direction segment pairs."""
+    import math
+    records = data.get("processed_records", [])
+    laps = data.get("laps", [])
+    if not records or not laps:
+        return
+    # Calculate heading and avg speed per work segment
+    seg_info = []
+    cum_dist = 0
+    for lap in laps:
+        d = float(lap.get("total_distance", 0))
+        seg_start = cum_dist; seg_end = cum_dist + d; cum_dist = seg_end
+        if lap.get("type") == "Rest" or d < 500:
+            continue
+        lats, lons, speeds = [], [], []
+        for r in records:
+            rd = r.get("distance", 0) or 0
+            if seg_start <= rd <= seg_end:
+                lat = r.get("position_lat"); lon = r.get("position_long")
+                spd = r.get("speed", 0) or 0
+                if lat and lon:
+                    lats.append(lat * 180.0 / (2**31))
+                    lons.append(lon * 180.0 / (2**31))
+                    speeds.append(spd)
+        if len(lats) < 3:
+            continue
+        dlat = lats[-1] - lats[0]; dlon = lons[-1] - lons[0]
+        x = math.cos(math.radians(sum(lats)/len(lats))) * dlon
+        heading = math.degrees(math.atan2(x, dlat)) % 360
+        avg_spd = sum(speeds) / len(speeds) if speeds else 0
+        avg_hr = float(lap.get("avg_heart_rate", 0))
+        seg_info.append({"num": lap.get("lap_number", 0), "dist": d, "heading": heading,
+                         "speed": avg_spd, "hr": avg_hr, "type": lap.get("type", "")})
+    # Find best opposite-direction pair (closest distance match)
+    best_pair = None
+    best_dist_ratio = 0
+    for i in range(len(seg_info)):
+        for j in range(i+1, len(seg_info)):
+            a, b = seg_info[i], seg_info[j]
+            heading_diff = abs(a["heading"] - b["heading"])
+            if heading_diff > 180: heading_diff = 360 - heading_diff
+            if heading_diff < 150 or heading_diff > 210:
+                continue
+            # Prefer adjacent or near-adjacent segments (same out-and-back stretch)
+            seg_gap = abs(seg_info.index(a) - seg_info.index(b))
+            if seg_gap > 2: continue
+            dist_ratio = min(a["dist"], b["dist"]) / max(a["dist"], b["dist"])
+            if seg_gap < 2 and dist_ratio >= 0.7:
+                dist_ratio += 0.5  # bonus for adjacent segments
+            if dist_ratio > best_dist_ratio:
+                best_dist_ratio = dist_ratio
+                best_pair = (a, b)
+
+    if best_pair:
+        a, b = best_pair
+        # HR-normalize: scale the higher-HR segment's speed down
+        spd_a = a["speed"]; spd_b = b["speed"]
+        if a["hr"] > b["hr"] and b["hr"] > 0:
+            spd_a *= b["hr"] / a["hr"]
+        elif b["hr"] > a["hr"] and a["hr"] > 0:
+            spd_b *= a["hr"] / b["hr"]
+        current = abs(spd_a - spd_b) / 2
+        # Annotate the two segments
+        for lap in laps:
+            if lap.get("lap_number") == a["num"]:
+                lap["direction"] = "→" if a["heading"] < 180 else "←"
+                lap["current_mps"] = round(current, 2)
+            if lap.get("lap_number") == b["num"]:
+                lap["direction"] = "→" if b["heading"] < 180 else "←"
+                lap["current_mps"] = round(current, 2)
+        data["estimated_current_mps"] = round(current, 2)
+        data["current_direction"] = "eastward" if spd_a > spd_b else "westward"
 
 def _enrich_session_weather(data):
     """Fetch city and weather for the session and store in session dict."""
@@ -4241,6 +4322,8 @@ def generate_combined_chart_image(data, chart_buf):
              cad_val = int(lap.get("avg_cadence", 0))
              l_type = classify_training_zone(hr_val, cad_val, MAX_HR, RESTING_HR)
              if not l_type: l_type = "Work"
+        if lap.get("direction"):
+            l_type = lap["direction"] + " " + l_type
 
         hr_val = int(lap.get("avg_heart_rate", 0) or 0)
         hr_str = str(hr_val) if hr_val > 0 else "-"
