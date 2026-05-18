@@ -49,7 +49,9 @@ python3 scripts/parse_fit.py <path_to_fit_file>
 ... (one line per segment, 🔥 for hot zones AT/TR/AN, 💤 for rest)
 
 💡 教练点评
-[one impactful takeaway from the review]
+· [highlight with specific pace/SPM/DPS data]
+· [improvement point with segment reference]
+· [next session drill with target metrics]
 
 #赛艇 #rowing #[tag]
 ```
