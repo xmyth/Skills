@@ -32,7 +32,27 @@ python3 scripts/parse_fit.py <path_to_fit_file>
    - **Highlights** (🌟 亮点): Specific strengths with data references
    - **Improvements** (⚡ 改进): Technical gaps with segment references
    - **Next Session** (🎯 下次训练): Actionable drill or focus
-4. Generate a Xiaohongshu social media post in Chinese with detailed segment breakdown
+4. Generate a Xiaohongshu social media post in Chinese using this format:
+```
+🚣 [日期] 水上训练 | [距离] [训练类型]
+
+📊 今日数据
+· 距离：[dist]km
+· 用时：[time]min
+· 配速：[pace]/500m
+· 桨频：[spm]spm · 心率：[hr]bpm
+· [weather emoji] [天气] [temp]°C · [城市]
+
+📋 分段详情
+🔥 [dist]m @ [pace] · [spm]spm · HR[hr]
+💤 休息  ↓[min_hr]
+... (one line per segment, 🔥 for hot zones AT/TR/AN, 💤 for rest)
+
+💡 教练点评
+[one impactful takeaway from the review]
+
+#赛艇 #rowing #[tag]
+```
 5. Build all outputs:
 ```bash
 python3 scripts/parse_fit.py --build-report <file.json> \
