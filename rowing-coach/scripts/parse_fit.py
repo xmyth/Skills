@@ -2087,7 +2087,7 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
                 dt_utc = datetime.datetime.fromisoformat(str(timestamp_str))
             
             # Convert to Local Time (assuming UTC+8 for consistency with Report)
-            dt_local = dt_utc + datetime.timedelta(hours=8)
+            dt_local = dt_utc
             ts = dt_local.strftime("%Y%m%d_%H%M")
         except:
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M")
@@ -2133,7 +2133,7 @@ def generate_build_report(data, output_dir, file_prefix, review_text, xhs_post):
         if s.get("start_time"):
             try:
                 dt = datetime.datetime.fromisoformat(str(s.get("start_time")))
-                dtl = dt + datetime.timedelta(hours=8)
+                dtl = dt
                 ts = dtl.strftime("%Y-%m-%d %H:%M")
                 f.write(f"* **Date**: {ts}\n")
             except: pass
@@ -2190,7 +2190,7 @@ def generate_build_report(data, output_dir, file_prefix, review_text, xhs_post):
             an = data.get("analysis", {})
             for k, name in [("best_500m","500m"),("best_1k","1000m"),("best_2k","2000m"),("best_4k","4000m"),("best_10k","10000m")]:
                 be = an.get(k)
-                if be: f.write(f"*   **Fastest {name}**: `{be[chr(39)+chr(112)+chr(97)+chr(99)+chr(101)+chr(39)]}` ({be[chr(39)+chr(116)+chr(105)+chr(109)+chr(101)+chr(39)]})\n")
+                if be: f.write(f"*   **Fastest {name}**: `{be.get('pace', '-')}` ({be.get('time', '-')})\n")
             if not any(an.get(k) for k,_ in [("best_500m",""),("best_1k",""),("best_2k",""),("best_4k",""),("best_10k","")]):
                 f.write("Insufficient data for best efforts.\n")
             f.write("\n---\n")
@@ -2202,21 +2202,67 @@ def generate_build_report(data, output_dir, file_prefix, review_text, xhs_post):
             f.write(xhs_post + "\n")
     return mp
 
-def _make_single_chart(df, chart_type, dark_mode=False):
-    fig, ax = plt.subplots(figsize=(12, 3), dpi=150)
+def _make_single_chart(df, chart_type, laps=None, best_efforts=None, dark_mode=False):
+    fig, ax = plt.subplots(figsize=(12, 3), dpi=200)
     ax.set_facecolor("#f8f9fa")
-    for spine in ax.spines.values(): spine.set_visible(False)
     ax.grid(False)
     fig.patch.set_facecolor("#f8f9fa")
-    ax.tick_params(axis="y", which="both", length=0, labelleft=False)
+    # Show Y-axis with labels, left spine as visual boundary
+    ax.spines["left"].set_visible(True)
+    ax.spines["left"].set_color("#cccccc")
+    ax.spines["right"].set_visible(False)
+    ax.spines["top"].set_visible(False)
+    ax.spines["bottom"].set_visible(True)
+    ax.spines["bottom"].set_color("#999999")
+    ax.tick_params(axis="y", which="both", labelsize=8, colors="#666666")
     ax.tick_params(axis="x", colors="#666666")
-    ax.set_xlabel("Distance (m)", color="#666666")
-    plt.subplots_adjust(top=0.99, bottom=0.15, right=0.99, left=0.01)
+    if chart_type == "hr":
+        ax.set_xlabel("Distance (m)", color="#555555", fontsize=10)
+        ax.tick_params(axis="x", colors="#555555", labelsize=9)
+        plt.subplots_adjust(top=0.99, bottom=0.18, right=0.99, left=0.07)
+    else:
+        ax.set_xlabel("")
+        ax.tick_params(axis="x", colors="#666666", length=0, labelbottom=False)
+        plt.subplots_adjust(top=0.99, bottom=0.01, right=0.99, left=0.07)
     if chart_type == "pace":
         color = "#1f77b4"
         valid = df[df["pace_smooth"] > 0]
         ax.plot(valid["distance"], valid["pace_smooth"], color=color, linewidth=1.5)
         ax.invert_yaxis()
+        ax.set_ylim(360, 80)  # Lock Y-axis: 6:00 to 1:20 (faster on top)
+        import matplotlib.ticker as ticker
+        def fmt_pace(x, pos):
+            if np.isnan(x): return ""
+            m=int(x//60); s=int(x%60); return f"{m}:{s:02d}"
+        ax.yaxis.set_major_formatter(ticker.FuncFormatter(fmt_pace))
+        # Average pace lines for each non-rest segment
+        if laps:
+            for lap in laps:
+                if lap.get("type") == "Rest": continue
+                avg_spd = float(lap.get("avg_speed", 0))
+                if avg_spd <= 0.5: continue
+                avg_pace_s = 500 / avg_spd
+                s_ts = lap.get("start_time")
+                dur = float(lap.get("total_timer_time", 0))
+                if not s_ts or dur <= 10: continue
+                try:
+                    s_dt = datetime.datetime.fromisoformat(str(s_ts)) if isinstance(s_ts, str) else s_ts
+                    if s_dt < df["time"].min() or s_dt > df["time"].max(): continue
+                    idx = (df["time"] - s_dt).abs().idxmin()
+                    sd = df.loc[idx, "distance"]
+                    e_dt = s_dt + datetime.timedelta(seconds=dur)
+                    if e_dt > df["time"].max(): e_dt = df["time"].max()
+                    idx_e = (df["time"] - e_dt).abs().idxmin()
+                    ed = df.loc[idx_e, "distance"]
+                    ax.hlines(y=avg_pace_s, xmin=sd, xmax=ed, colors="#1a5276", linestyles="dashed",
+                             linewidth=1.8, alpha=0.7)
+                    # Label with pace value at right edge of segment
+                    mid_d = (sd + ed) / 2
+                    pace_label = f"{int(avg_pace_s//60)}:{int(avg_pace_s%60):02d}"
+                    ax.text(mid_d, avg_pace_s - 2, pace_label, color="#1a5276", fontsize=9,
+                           fontweight="bold", ha="center", va="bottom", alpha=0.9,
+                           bbox=dict(facecolor="white", alpha=0.5, edgecolor="none", pad=1))
+                except: pass
     elif chart_type == "spm":
         color = "#ff7f0e"
         spm_df = df[df["cad_smooth"] > 0]
@@ -2225,6 +2271,53 @@ def _make_single_chart(df, chart_type, dark_mode=False):
         color = "#d62728"
         hr_df = df[df["hr_smooth"] > 0]
         ax.plot(hr_df["distance"], hr_df["hr_smooth"], color=color, linewidth=1.5)
+
+    # Segment markers
+    if laps:
+        trans = ax.get_xaxis_transform()
+        for i, lap in enumerate(laps):
+            is_rest = lap.get("type") == "Rest"
+            s_ts = lap.get("start_time")
+            dur = float(lap.get("total_timer_time", 0))
+            if not s_ts or dur <= 10: continue
+            try:
+                s_dt = datetime.datetime.fromisoformat(str(s_ts)) if isinstance(s_ts, str) else s_ts
+                if s_dt < df["time"].min() or s_dt > df["time"].max(): continue
+                idx = (df["time"] - s_dt).abs().idxmin()
+                start_dist = df.loc[idx, "distance"]
+                e_dt = s_dt + datetime.timedelta(seconds=dur)
+                if e_dt > df["time"].max(): e_dt = df["time"].max()
+                idx_e = (df["time"] - e_dt).abs().idxmin()
+                end_dist = df.loc[idx_e, "distance"]
+                marker_c = "#999999" if is_rest else "#777777"
+                ax.axvline(x=start_dist, color=marker_c, linestyle="--", linewidth=1.0, alpha=0.6)
+                ax.axvline(x=end_dist, color=marker_c, linestyle="--", linewidth=1.0, alpha=0.6)
+                if not is_rest and (end_dist - start_dist) > 50 and chart_type == "pace":
+                    mid = (start_dist + end_dist) / 2
+                    ax.text(mid, 0.99, str(i+1), transform=trans, ha="center", va="top",
+                           fontsize=11, fontweight="bold", color="#444444")
+            except: pass
+
+    # Best effort bars (pace chart only)
+    if chart_type == "pace" and best_efforts:
+        layout = {"best_500m": ("red", "500m", 0.32), "best_1k": ("green", "1k", 0.22),
+                  "best_2k": ("blue", "2k", 0.12), "best_4k": ("purple", "4k", 0.02)}
+        trans = ax.get_xaxis_transform()
+        for key, (ec, label, y_pos) in layout.items():
+            eff = best_efforts.get(key) or {}
+            if not eff.get("start_time"): continue
+            try:
+                s_dt = datetime.datetime.fromisoformat(str(eff["start_time"]))
+                if s_dt < df["time"].min() or s_dt > df["time"].max(): continue
+                idx = (df["time"] - s_dt).abs().idxmin()
+                sd = df.loc[idx, "distance"]
+                ed = sd + eff.get("distance", 0)
+                ax.plot([sd, ed], [y_pos, y_pos], color=ec, linewidth=3, transform=trans, solid_capstyle="butt", alpha=0.7)
+                mid_d = (sd + ed) / 2
+                ax.text(mid_d, y_pos + 0.02, f"{label}: {eff.get('pace','')}", color=ec,
+                       fontsize=10, fontweight="bold", ha="center", va="bottom", transform=trans)
+            except: pass
+
     buf = io.BytesIO()
     plt.savefig(buf, format="png")
     plt.close()
@@ -2333,7 +2426,7 @@ def generate_pacing_chart(data, output_dir, file_prefix, dark_mode=False, chart_
 
     # Individual chart mode: single metric only
     if chart_type:
-        return _make_single_chart(df, chart_type, dark_mode)
+        return _make_single_chart(df, chart_type, data.get("laps"), data.get("analysis", {}), dark_mode)
 
     # Create Plot
     fig, ax1 = plt.subplots(figsize=(12, 7), dpi=150)
@@ -2465,7 +2558,7 @@ def generate_pacing_chart(data, output_dir, file_prefix, dark_mode=False, chart_
             else:
                 dt_obj = start_ts
             # Localize UTC+8
-            dt_local = dt_obj + datetime.timedelta(hours=8)
+            dt_local = dt_obj
             date_str = dt_local.strftime("%Y-%m-%d %H:%M")
         except:
             pass
@@ -2722,7 +2815,7 @@ def generate_share_image(data, chart_buffer, review_text, output_dir, file_prefi
     ts = session.get("start_time")
     if ts:
         try:
-           dt = datetime.datetime.fromisoformat(str(ts)) + datetime.timedelta(hours=8)
+           dt = datetime.datetime.fromisoformat(str(ts))
            date_str = dt.strftime("%Y.%m.%d %H:%M")
            title = f"{dt.strftime('%m/%d')} {title}"
         except: pass
@@ -3180,9 +3273,8 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val):
             else:
                 dt_utc = datetime.datetime.fromisoformat(str(start_t))
             
-            # Localize
-            dt_local = dt_utc + datetime.timedelta(hours=8)
-            file_time_str = dt_local.strftime("%Y%m%d_%H%M")
+            # Time already normalized to local in main()
+            file_time_str = dt_utc.strftime("%Y%m%d_%H%M")
         except Exception as e:
             pass
     
@@ -3246,7 +3338,7 @@ def generate_training_report(data, input_file_path, max_hr_val, resting_hr_val):
             try:
                 dt = datetime.datetime.fromisoformat(str(session.get("start_time")))
                 # FIT uses UTC. Convert to UTC+8 (Beijing Time)
-                dt_local = dt + datetime.timedelta(hours=8)
+                dt_local = dt
                 time_str = dt_local.strftime("%Y-%m-%d %H:%M")
                 f.write(f"* **Date**: {time_str}\n")
             except:
@@ -3431,20 +3523,7 @@ def main():
     
     args = parser.parse_args()
 
-    # Normal mode: Parse FIT file → JSON only
-    if not args.file_path:
-        parser.error("file_path is required")
-    
-    parsed_data = parse_fit(args.file_path)
-    
-    if parsed_data:
-        analyzed_data = analyze_rowing(parsed_data, args.max_hr, args.resting_hr)
-        _enrich_session_weather(analyzed_data)
-        json_path = export_analysis_json(analyzed_data, args.file_path, args.max_hr, args.resting_hr)
-        print(f"✅ Analysis JSON generated: {json_path}")
-    else:
-        sys.exit(1)
-
+    # Mode: Build report from JSON
     # Mode: Build report from JSON
     if args.build_report:
         json_path = args.build_report
@@ -3502,6 +3581,27 @@ def main():
 
         sys.exit(0)
 
+    # Normal mode: Parse FIT file → JSON only
+    if not args.file_path:
+        parser.error("file_path is required")
+
+    parsed_data = parse_fit(args.file_path)
+
+    if parsed_data:
+        analyzed_data = analyze_rowing(parsed_data, args.max_hr, args.resting_hr)
+        _enrich_session_weather(analyzed_data)
+        # Normalize timezone: Concept2 uses UTC, SpdCoach already local
+        session = analyzed_data.get("session", {})
+        if session.get("sub_sport") == "indoor_rowing":
+            st = session.get("start_time")
+            if st:
+                if isinstance(st, str): st = datetime.datetime.fromisoformat(st)
+                session["start_time"] = (st + datetime.timedelta(hours=8)).isoformat()
+        json_path = export_analysis_json(analyzed_data, args.file_path, args.max_hr, args.resting_hr)
+        print(f"✅ Analysis JSON generated: {json_path}")
+    else:
+        sys.exit(1)
+
 def _save_chart(data, chart_buffer, output_dir, file_prefix):
     """Save combined chart image. Returns chart_path or None."""
     chart_filename = f"{file_prefix}.png"
@@ -3557,7 +3657,7 @@ def _enrich_session_weather(data):
         lat = lat_raw * 180.0 / (2**31)
         lon = lon_raw * 180.0 / (2**31)
         dt = datetime.datetime.fromisoformat(str(start_t))
-        dt_local = dt + datetime.timedelta(hours=8)
+        dt_local = dt
         city = _fetch_city(lat, lon)
         if city:
             session["city"] = city
@@ -3627,7 +3727,7 @@ def _fetch_weather(lat, lon, dt):
             95: ("☔", "雷暴"), 96: ("☔", "雷暴冰雹"), 99: ("☔", "强雷暴"),
         }
         emoji, desc = weather_map.get(code, ("", ""))
-        weather_str = f" · {emoji} {desc} {temp}°C" if emoji else f" · {temp}°C"
+        weather_str = f"{emoji} {desc} {temp}°C" if emoji else f"{temp}°C"
         return weather_str
     except Exception:
         return ""
@@ -3637,7 +3737,7 @@ def generate_xhs_page1(data, output_dir, file_prefix):
     session = data.get("session", {}); laps = data.get("laps", [])
     is_indoor = session.get("sub_sport") == "indoor_rowing"
     type_label = "\U0001f6a3 \u5ba4\u5185\u5212\u8239" if is_indoor else "\U0001f6a3 \u6c34\u4e0a\u8bad\u7ec3"
-    img_width = 1080; padding = 28
+    img_width = 900; padding = 24
     bg_top = (10,22,40); bg_mid = (26,42,74); bg_bot = (15,32,64)
     accent = (91,192,190); gold = (200,180,155)
     c_blue = (31,119,180); c_orange = (255,127,14); c_red = (214,39,40)
@@ -3661,14 +3761,14 @@ def generate_xhs_page1(data, output_dir, file_prefix):
         try:
             if isinstance(st, str): dt = datetime.datetime.fromisoformat(st)
             else: dt = st
-            dt = dt + datetime.timedelta(hours=8)
+            dt = dt
             wd = ["\u4e00","\u4e8c","\u4e09","\u56db","\u4e94","\u516d","\u65e5"][dt.weekday()]
             h = dt.hour
             tod = "\u6e05\u6668" if 5<=h<9 else ("\u4e0a\u5348" if 9<=h<12 else ("\u4e0b\u5348" if 12<=h<18 else "\u665a\u95f4"))
             date_str = f"{dt.year}\u5e74{dt.month}\u6708{dt.day}\u65e5 \u00b7 \u661f\u671f{wd} \u00b7 {tod}"
             city = session.get("city",""); weather = session.get("weather","")
             if city: date_str += f" \u00b7 {city}"
-            if weather: date_str += weather
+            if weather: date_str += f" · {weather}"
         except: pass
     wlaps = [l for l in laps if l.get("type")!="Rest"]
     td = sum(float(l.get("total_distance",0)) for l in laps)/1000
@@ -3684,24 +3784,24 @@ def generate_xhs_page1(data, output_dir, file_prefix):
         spd=float(l.get("avg_speed",0))
         if spm>0:
             tspm+=spm; cnt+=1
-            if spd>0.5: tdps+=spd/(spm/60)
+            if spd>0.5 and spm>0: tdps+=spd/(spm/60)
             if hr>0: thr+=hr
     asp = tspm/cnt if cnt>0 else 0; ahr = thr/cnt if cnt>0 else 0; adp = tdps/cnt if cnt>0 else 0
-    hero_h = 230
+    hero_h = 260
     hero = Image.new("RGBA", (img_width, hero_h))
     hd = ImageDraw.Draw(hero)
     _draw_gradient(hd, img_width, hero_h, bg_top, bg_mid, bg_bot)
     with Pilmoji(hero) as p:
-        p.text((img_width//2, 35), type_label, fill=accent, font=ft_title, anchor="ma")
+        p.text((img_width//2, 40), type_label, fill=accent, font=ft_title, anchor="ma")
     with Pilmoji(hero) as p:
-        p.text((img_width//2, 68), date_str, fill=t_muted, font=ft_date, anchor="ma")
+        p.text((img_width//2, 75), date_str, fill=t_muted, font=ft_date, anchor="ma")
     cols = [int(img_width*0.21), int(img_width*0.5), int(img_width*0.79)]
     hlbl = ["\u8ddd\u79bb", "\u7528\u65f6", "\u5e73\u5747\u914d\u901f"]
     htxt = [f"{td:.1f} km", f"{tt:.0f} min", f"{ps} /500m"]
     hcol = [gold, gold, accent]
     for i in range(3):
-        hd.text((cols[i], 125), htxt[i], fill=hcol[i], font=ft_hero, anchor="ma")
-        hd.text((cols[i], 170), hlbl[i], fill=t_muted, font=ft_label, anchor="ma")
+        hd.text((cols[i], 140), htxt[i], fill=hcol[i], font=ft_hero, anchor="ma")
+        hd.text((cols[i], 195), hlbl[i], fill=t_muted, font=ft_label, anchor="ma")
     met_h = 100
     mcard = Image.new("RGBA", (img_width-2*padding, met_h))
     md = ImageDraw.Draw(mcard)
@@ -3756,7 +3856,7 @@ def generate_xhs_page2(data, output_dir, file_prefix, review_text=""):
     session = data.get("session", {}); laps = data.get("laps", [])
     is_indoor = session.get("sub_sport") == "indoor_rowing"
     type_label = "\U0001f6a3 \u5ba4\u5185\u5212\u8239" if is_indoor else "\U0001f6a3 \u6c34\u4e0a\u8bad\u7ec3"
-    img_width = 1080; padding = 28
+    img_width = 900; padding = 24
     bg_top = (10,22,40); bg_mid = (26,42,74); bg_bot = (15,32,64)
     accent = (91,192,190); gold = (200,180,155)
     t_white = (232,236,241); t_muted = (136,153,170); t_dim = (85,102,119)
@@ -3766,7 +3866,7 @@ def generate_xhs_page2(data, output_dir, file_prefix, review_text=""):
         "/Library/Fonts/Arial Unicode.ttf", "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"]
     lf = lambda sz: _load_font(font_list, sz)
     ft_title = lf(26); ft_date = lf(18)
-    ft_hero = lf(40); ft_unit = lf(20); ft_label = lf(16)
+    ft_hero = lf(48); ft_unit = lf(24); ft_label = lf(18)
     ft_sec = lf(22); ft_mv = lf(24); ft_ml = lf(14)
     ft_th = lf(16); ft_tb = lf(20); ft_footer = lf(18)
     ft_rv_title = lf(20); ft_rv_body = lf(17)
@@ -3775,14 +3875,14 @@ def generate_xhs_page2(data, output_dir, file_prefix, review_text=""):
         try:
             if isinstance(st, str): dt = datetime.datetime.fromisoformat(st)
             else: dt = st
-            dt = dt + datetime.timedelta(hours=8)
+            dt = dt
             wd = ["\u4e00","\u4e8c","\u4e09","\u56db","\u4e94","\u516d","\u65e5"][dt.weekday()]
             h = dt.hour
             tod = "\u6e05\u6668" if 5<=h<9 else ("\u4e0a\u5348" if 9<=h<12 else ("\u4e0b\u5348" if 12<=h<18 else "\u665a\u95f4"))
             date_str = f"{dt.year}\u5e74{dt.month}\u6708{dt.day}\u65e5 \u00b7 \u661f\u671f{wd} \u00b7 {tod}"
             city = session.get("city",""); weather = session.get("weather","")
             if city: date_str += f" \u00b7 {city}"
-            if weather: date_str += weather
+            if weather: date_str += f" · {weather}"
         except: pass
     wlaps = [l for l in laps if l.get("type")!="Rest"]
     td = sum(float(l.get("total_distance",0)) for l in laps)/1000
@@ -3797,25 +3897,25 @@ def generate_xhs_page2(data, output_dir, file_prefix, review_text=""):
         spm=float(l.get("avg_cadence",0)); hr=float(l.get("avg_heart_rate",0))
         spd=float(l.get("avg_speed",0))
         if spm>0: tspm+=spm; cnt+=1
-        if spd>0.5: tdps+=spd/(spm/60)
+        if spd>0.5 and spm>0: tdps+=spd/(spm/60)
         if hr>0: thr+=hr
     asp = tspm/cnt if cnt>0 else 0; ahr = thr/cnt if cnt>0 else 0; adp = tdps/cnt if cnt>0 else 0
-    hero_h = 160
+    hero_h = 260
     hero = Image.new("RGBA", (img_width, hero_h))
     hd = ImageDraw.Draw(hero)
     _draw_gradient(hd, img_width, hero_h, bg_top, bg_mid, bg_bot)
     with Pilmoji(hero) as p:
-        p.text((img_width//2, 28), type_label, fill=accent, font=ft_title, anchor="ma")
+        p.text((img_width//2, 40), type_label, fill=accent, font=ft_title, anchor="ma")
     with Pilmoji(hero) as p:
-        p.text((img_width//2, 56), date_str, fill=t_muted, font=ft_date, anchor="ma")
+        p.text((img_width//2, 75), date_str, fill=t_muted, font=ft_date, anchor="ma")
     cols = [int(img_width*0.21), int(img_width*0.5), int(img_width*0.79)]
     hlbl = ["\u8ddd\u79bb", "\u7528\u65f6", "\u5e73\u5747\u914d\u901f"]
     htxt = [f"{td:.1f} km", f"{tt:.0f} min", f"{ps} /500m"]
     hcol = [gold, gold, accent]
     for i in range(3):
-        hd.text((cols[i], 95), htxt[i], fill=hcol[i], font=ft_hero, anchor="ma")
-        hd.text((cols[i], 130), hlbl[i], fill=t_muted, font=ft_label, anchor="ma")
-    met_h = 80
+        hd.text((cols[i], 140), htxt[i], fill=hcol[i], font=ft_hero, anchor="ma")
+        hd.text((cols[i], 195), hlbl[i], fill=t_muted, font=ft_label, anchor="ma")
+    met_h = 100
     mcard = Image.new("RGBA", (img_width-2*padding, met_h))
     md = ImageDraw.Draw(mcard)
     md.rounded_rectangle([(0,0),(img_width-2*padding,met_h)], radius=14, fill=c_bg, outline=c_border, width=1)
@@ -3896,7 +3996,7 @@ def generate_xhs_page2(data, output_dir, file_prefix, review_text=""):
                 content = tx[start:end].strip().strip("-*").strip()
                 if content: sections.append((emoji, title, content))
         for emoji, title, content in sections:
-            max_w = img_width - 2*padding - 40
+            max_w = img_width - 2*padding - 48
             lines_w = []
             for para in content.split("\n"):
                 para = para.strip()
@@ -3910,15 +4010,17 @@ def generate_xhs_page2(data, output_dir, file_prefix, review_text=""):
                         lines_w.append(words); words = ch
                     else: words = trial
                 if words: lines_w.append(words)
-            card_h = 56 + 36 + len(lines_w)*24
+            card_h = 56 + len(lines_w)*26 + 16
             card = Image.new("RGBA", (img_width-2*padding, card_h))
             cd2 = ImageDraw.Draw(card)
-            cd2.rounded_rectangle([(0,0),(img_width-2*padding,card_h)], radius=10, fill=c_bg, outline=c_border, width=1)
-            cd2.rectangle([(0,0),(4,card_h)], fill=accent)
+            # Card with subtle accent background
+            cd2.rounded_rectangle([(0,0),(img_width-2*padding,card_h)], radius=12,
+                                  fill=(91,192,190,12), outline=(91,192,190,30), width=1)
+            cd2.rectangle([(0,0),(5,card_h)], fill=accent)
             with Pilmoji(card) as p:
-                p.text((20,16), f"{emoji} {title}", fill=accent, font=ft_rv_title)
+                p.text((24,18), f"{emoji} {title}", fill=(200,220,240), font=ft_rv_title)
             for li, ln in enumerate(lines_w):
-                cd2.text((20, 56+li*24), ln, fill=t_muted, font=ft_rv_body)
+                cd2.text((24, 52+li*26), ln, fill=(180,195,215), font=ft_rv_body)
             review_cards.append(card)
     ft_h = 80
     footer = Image.new("RGBA", (img_width, ft_h))
@@ -4054,7 +4156,7 @@ def generate_combined_chart_image(data, chart_buf):
     ts = session.get("start_time")
     if ts:
         try:
-           dt = datetime.datetime.fromisoformat(str(ts)) + datetime.timedelta(hours=8)
+           dt = datetime.datetime.fromisoformat(str(ts))
            date_str = dt.strftime("%Y-%m-%d")
            subtitle_parts.append(date_str)
         except: pass
