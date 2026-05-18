@@ -1153,18 +1153,13 @@ def find_segments_adaptive(records):
         rest_cad = np.mean(cad[rest_start:rest_end])
         rest_dur = (timestamps[rest_end-1] - timestamps[rest_start]).total_seconds()
 
-        # A real rest must have:
-        # 1. Average speed < 70% of reference (pace slowed significantly)
-        # 2. OR average cadence < 10 spm (basically stopped rowing)
-        # 3. Also check: rest HR should be declining or low relative to work
-        significant_slowdown = rest_spd < ref_spd * 0.75
-        very_low_cadence = rest_cad < 10.0
-
-        if not (significant_slowdown or very_low_cadence):
+        # A real rest must have significant speed drop — cadence not required
+        # Also: rest HR should be declining or low relative to work
+        if rest_spd >= ref_spd * 0.75:
             continue
 
         # Duration sanity: rest should be at least 15s
-        if rest_dur < 15:
+        if rest_dur < 8:
             continue
 
         # Check HR: rest HR must be notably lower than the valley's prior peak.
@@ -1530,7 +1525,7 @@ def _find_gap_rests(records, timestamps):
         if g > 0:
             gaps.append(g)
     median_gap = np.median(gaps) if gaps else 4.0
-    threshold = max(median_gap * 3.0, 10.0)
+    threshold = max(median_gap * 2.5, 8.0)
 
     rest_breaks = []
     n = len(records)
@@ -1553,8 +1548,13 @@ def _find_gap_rests(records, timestamps):
                                if float(r.get("speed_smooth", 0) or 0) > 0.5])
             median_spd = np.median(all_spd) if len(all_spd) > 10 else 3.0
 
-            # Gap is only a rest if surrounding speed drops below 50% of median
-            if gap_spd > median_spd * 0.50:
+            # Gap is a rest if: surrounding speed drops OR HR drops significantly
+            hr_before = np.mean([float(records[j].get("heart_rate", 0) or 0)
+                                for j in range(max(0, i-10), i) if float(records[j].get("heart_rate", 0) or 0) > 0])
+            hr_after = np.mean([float(records[j].get("heart_rate", 0) or 0)
+                               for j in range(i, min(n, i+5)) if float(records[j].get("heart_rate", 0) or 0) > 0])
+            hr_drop = hr_before - hr_after if hr_before > 0 and hr_after > 0 else 0
+            if gap_spd > median_spd * 0.65 and hr_drop < 10:
                 continue
 
             rest_breaks.append({
