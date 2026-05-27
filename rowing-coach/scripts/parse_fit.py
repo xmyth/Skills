@@ -680,8 +680,10 @@ def preprocess_records(records):
     # User Request "Enable Speed Smoothing" (2026-02-06)
     # Strategy: Smooth Speed (Window +/- 3s), Keep Cadence/HR Raw.
 
-    # Use a centered window of ~6 seconds ( +/- 3.0s )
-    WINDOW_HALF_SEC = 3
+    # Use a centered window of ~3 seconds ( +/- 1.5s ).
+    # Narrower than the original 6s to preserve brief speed collapses
+    # that mark real rest starts. Wider windows smear short stops.
+    WINDOW_HALF_SEC = 1.5
     
     smoothed = []
     n = len(cleaned)
@@ -1118,28 +1120,49 @@ def find_segments_adaptive(records):
     for v in valleys:
         vi = v["idx"]
 
-        # Reference: pace/cadence from the 60s before the valley
-        ref_lo = max(0, vi - _sec_to_idx(timestamps, vi, 60))
-        ref_spd = np.mean(spd[ref_lo:vi]) if vi > ref_lo else np.mean(spd[spd > 0.5])
-        ref_cad = np.mean(cad[ref_lo:vi]) if vi > ref_lo else np.mean(cad[cad > 5])
+        # Reference: pace/cadence from 60-120s before the valley.
+        # HR lags 20-40s behind the physical stop, so the 60s window right
+        # before the valley often overlaps the slowdown/rest. Shifting the
+        # window earlier ensures ref is sampled from genuine work.
+        ref_end_idx = max(0, vi - _sec_to_idx(timestamps, vi, 60))
+        ref_start_idx = max(0, vi - _sec_to_idx(timestamps, vi, 120))
+        if ref_end_idx > ref_start_idx:
+            ref_spd = np.mean(spd[ref_start_idx:ref_end_idx])
+            ref_cad = np.mean(cad[ref_start_idx:ref_end_idx])
+        elif ref_end_idx > 0:
+            ref_spd = np.mean(spd[ref_start_idx:ref_end_idx])
+            ref_cad = np.mean(cad[ref_start_idx:ref_end_idx])
+        else:
+            ref_spd = np.mean(spd[spd > 0.5]) if np.any(spd > 0.5) else 0
+            ref_cad = np.mean(cad[cad > 5]) if np.any(cad > 5) else 0
 
-        # Backtrack to find rest start: where pace OR cadence starts falling
+        # Backtrack to find rest start: where pace OR cadence starts falling.
+        # Require TWO consecutive non-rest points to stop — a single noise point
+        # (e.g. paddle bump) shouldn't cut off backtracking into the real slowdown.
         bt_start = max(0, vi - _sec_to_idx(timestamps, vi, 90))
         rest_start = vi
+        non_rest_streak = 0
         for j in range(vi, bt_start, -1):
             local_spd = np.mean(spd[max(0, j-3):min(n, j+4)])
             local_cad = np.mean(cad[max(0, j-3):min(n, j+4)])
             if local_spd < ref_spd * 0.85 or (local_cad < max(8, ref_cad * 0.60) and local_spd < ref_spd * 0.95):
                 rest_start = j
+                non_rest_streak = 0
             else:
-                break
+                non_rest_streak += 1
+                if non_rest_streak >= 2:
+                    break
 
-        # Forward to find rest end: where pace recovers
+        # Forward to find rest end: where pace AND cadence FULLY recover.
+        # Light paddling at moderate speed but low cadence shouldn't end the rest.
+        # Require speed > 92% of work speed — marginal paddling at 85-90% is
+        # still part of the recovery, not a true restart.
         ft_end = min(n, vi + _sec_to_idx(timestamps, vi, 120))
         rest_end = vi
         for j in range(vi, ft_end):
             local_spd = np.mean(spd[max(0, j-3):min(n, j+4)])
-            if local_spd > ref_spd * 0.85:
+            local_cad = np.mean(cad[max(0, j-3):min(n, j+4)])
+            if local_spd > ref_spd * 0.92 or (local_spd > ref_spd * 0.85 and local_cad > ref_cad * 0.70):
                 rest_end = j
                 break
         else:
@@ -1153,9 +1176,13 @@ def find_segments_adaptive(records):
         rest_cad = np.mean(cad[rest_start:rest_end])
         rest_dur = (timestamps[rest_end-1] - timestamps[rest_start]).total_seconds()
 
-        # A real rest must have significant speed drop — cadence not required
-        # Also: rest HR should be declining or low relative to work
-        if rest_spd >= ref_spd * 0.75:
+        # A real rest must have significant speed drop.
+        # Two ways to qualify: (a) average rest speed < 75% of work speed, or
+        # (b) speed bottomed out below 35% of work speed (boat nearly stopped).
+        # The second path catches short rests where transitional paddling
+        # raises the average but the boat genuinely came to a standstill.
+        rest_min_spd = np.min(spd[rest_start:rest_end])
+        if rest_spd >= ref_spd * 0.75 and rest_min_spd >= ref_spd * 0.35:
             continue
 
         # Duration sanity: rest should be at least 15s
@@ -1579,7 +1606,8 @@ def _merge_rest_breaks(existing, gaps, timestamps):
     merged = []
     for rb in all_breaks:
         if merged and rb["rest_start"] <= merged[-1]["rest_end"] + _sec_to_idx(timestamps, merged[-1]["rest_end"], 10):
-            # Overlap or very close — merge
+            # Overlap or very close — merge, extending BOTH ends
+            merged[-1]["rest_start"] = min(merged[-1]["rest_start"], rb["rest_start"])
             merged[-1]["rest_end"] = max(merged[-1]["rest_end"], rb["rest_end"])
             merged[-1]["rest_dur"] = max(
                 merged[-1].get("rest_dur", 0),
