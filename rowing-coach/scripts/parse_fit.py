@@ -1143,8 +1143,11 @@ def find_segments_adaptive(records):
         rest_start = vi
         non_rest_streak = 0
         for j in range(vi, bt_start, -1):
-            local_spd = np.mean(spd[max(0, j-3):min(n, j+4)])
-            local_cad = np.mean(cad[max(0, j-3):min(n, j+4)])
+            # Backward-weighted (4 behind, 1 ahead). 1 forward point catches
+            # bi-modal slowdowns (slow → paddle → stop) without dragging the
+            # mean down from deep inside the rest.
+            local_spd = np.mean(spd[max(0, j-4):min(n, j+2)])
+            local_cad = np.mean(cad[max(0, j-4):min(n, j+2)])
             if local_spd < ref_spd * 0.85 or (local_cad < max(8, ref_cad * 0.60) and local_spd < ref_spd * 0.95):
                 rest_start = j
                 non_rest_streak = 0
@@ -1559,8 +1562,10 @@ def _find_gap_rests(records, timestamps):
     for i in range(1, n):
         g = (timestamps[i] - timestamps[i-1]).total_seconds()
         if g > threshold:
-            # Expand to capture surrounding slowdown/recovery
-            rest_start = max(0, i - 1 - 3)
+            # The gap itself marks the transition. Don't expand far backward —
+            # valley-based detection handles the precise slowdown boundary.
+            # Expanding by 1 index captures adjacent transitional data only.
+            rest_start = max(0, i - 1 - 1)
             rest_end = min(n, i + 3)
 
             # Validate: the gap must coincide with an actual speed drop
@@ -1606,9 +1611,15 @@ def _merge_rest_breaks(existing, gaps, timestamps):
     merged = []
     for rb in all_breaks:
         if merged and rb["rest_start"] <= merged[-1]["rest_end"] + _sec_to_idx(timestamps, merged[-1]["rest_end"], 10):
-            # Overlap or very close — merge, extending BOTH ends
-            merged[-1]["rest_start"] = min(merged[-1]["rest_start"], rb["rest_start"])
-            merged[-1]["rest_end"] = max(merged[-1]["rest_end"], rb["rest_end"])
+            # Overlap or very close — merge.
+            # Gap rests use a fixed offset for rest_start, which is less precise
+            # than valley-backtracked boundaries. When a gap overlaps a valley
+            # rest, keep the valley's start and only extend the end from the gap.
+            if rb.get("source") == "gap" and merged[-1].get("source") != "gap":
+                merged[-1]["rest_end"] = max(merged[-1]["rest_end"], rb["rest_end"])
+            else:
+                merged[-1]["rest_start"] = min(merged[-1]["rest_start"], rb["rest_start"])
+                merged[-1]["rest_end"] = max(merged[-1]["rest_end"], rb["rest_end"])
             merged[-1]["rest_dur"] = max(
                 merged[-1].get("rest_dur", 0),
                 (timestamps[min(merged[-1]["rest_end"], len(timestamps)-1)] -
