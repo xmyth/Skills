@@ -2343,8 +2343,9 @@ def _make_single_chart(df, chart_type, laps=None, best_efforts=None, dark_mode=F
 
     # Best effort bars (pace chart only)
     if chart_type == "pace" and best_efforts:
-        layout = {"best_500m": ("red", "500m", 0.32), "best_1k": ("green", "1k", 0.22),
-                  "best_2k": ("blue", "2k", 0.12), "best_4k": ("purple", "4k", 0.02)}
+        layout = {"best_500m": ("red", "500m", 0.36), "best_1k": ("green", "1k", 0.28),
+                  "best_2k": ("blue", "2k", 0.20), "best_4k": ("purple", "4k", 0.12),
+                  "best_10k": ("orange", "10k", 0.04)}
         trans = ax.get_xaxis_transform()
         for key, (ec, label, y_pos) in layout.items():
             eff = best_efforts.get(key) or {}
@@ -4103,15 +4104,23 @@ def generate_xhs_page2(data, output_dir, file_prefix, review_text=""):
                    ("Next Session","\U0001f3af","\u4e0b\u6b21\u8bad\u7ec3")]
         tx = review_text
         for mk, emoji, title in markers:
-            pat1 = f"### {mk}"; pat2 = f"**{mk}**"; pat3 = mk
+            # Search for English and Chinese header variants
+            patterns = [
+                f"### {mk}",           # ### Highlights
+                f"**{mk}**",           # **Highlights**
+                mk,                    # Highlights
+                f"### {emoji} {title}", # ### \ud83c\udf1f \u4eae\u70b9
+                f"### {emoji}",        # ### \ud83c\udf1f
+                f"### {title}",        # ### \u4eae\u70b9
+            ]
             pos = -1; plen = 0
-            for p in [pat1, pat2, pat3]:
+            for p in patterns:
                 idx = tx.find(p)
                 if idx >= 0 and (pos < 0 or idx < pos): pos = idx; plen = len(p)
             if pos >= 0:
                 start = pos + plen
                 end = len(tx)
-                for nm in ["### ","**"]:
+                for nm in ["### ","**", "\U0001f31f ", "\u26a1 ", "\U0001f3af "]:
                     ni = tx.find(nm, start)
                     if ni >= 0 and ni < end: end = ni
                 content = tx[start:end].strip().strip("-*").strip()
