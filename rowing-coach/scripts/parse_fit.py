@@ -3721,7 +3721,7 @@ def _estimate_current(data):
         dlat = lats[-1] - lats[0]; dlon = lons[-1] - lons[0]
         x = math.cos(math.radians(sum(lats)/len(lats))) * dlon
         heading = math.degrees(math.atan2(x, dlat)) % 360
-        avg_spd = sum(speeds) / len(speeds) if speeds else 0
+        avg_spd = float(lap.get("avg_speed", 0))  # segment avg speed, not raw GPS
         avg_hr = float(lap.get("avg_heart_rate", 0))
         seg_info.append({"num": lap.get("lap_number", 0), "dist": d, "heading": heading,
                          "speed": avg_spd, "hr": avg_hr, "type": lap.get("type", "")})
@@ -3763,7 +3763,9 @@ def _estimate_current(data):
                 lap["direction"] = "→" if b["heading"] < 180 else "←"
                 lap["current_mps"] = round(current, 2)
         data["estimated_current_mps"] = round(current, 2)
-        data["current_direction"] = "eastward" if spd_a > spd_b else "westward"
+        # Current direction = direction of the faster segment (with-current = faster)
+        faster_seg = a if spd_a > spd_b else b
+        data["current_direction"] = "eastward" if faster_seg["heading"] < 180 else "westward"
 
 def _enrich_session_weather(data):
     """Fetch city and weather for the session and store in session dict."""
