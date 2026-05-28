@@ -4119,10 +4119,16 @@ def generate_xhs_page2(data, output_dir, file_prefix, review_text=""):
                 if idx >= 0 and (pos < 0 or idx < pos): pos = idx; plen = len(p)
             if pos >= 0:
                 start = pos + plen
+                # Skip remaining text on the header line (e.g. "\u7a7a\u95f4"
+                # after matching "### \u26a1 \u6539\u8fdb")
+                nl = tx.find("\n", start)
+                if nl >= 0: start = nl + 1
                 end = len(tx)
-                for nm in ["### ","**", "\U0001f31f ", "\u26a1 ", "\U0001f3af "]:
-                    ni = tx.find(nm, start)
-                    if ni >= 0 and ni < end: end = ni
+                # Only terminate at the next ### section header. Do NOT
+                # use ** or emoji as terminators \u2014 review content uses
+                # **bold** and emoji within bullet points.
+                ni = tx.find("### ", start)
+                if ni >= 0 and ni < end: end = ni
                 content = tx[start:end].strip().strip("-*").strip()
                 if content: sections.append((emoji, title, content))
         for emoji, title, content in sections:
