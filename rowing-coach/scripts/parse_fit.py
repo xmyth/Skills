@@ -1222,9 +1222,33 @@ def find_segments_adaptive(records):
         rest_breaks = _merge_rest_breaks(rest_breaks, gap_rests, timestamps)
 
     # --- Step 4: Merge close rest breaks (< 2 min apart) ---
+    # Only merge if the gap between rests doesn't contain meaningful work.
+    # A burst of high-intensity work between two short rests is an interval,
+    # not part of the same rest block. Without this check, crew boat interval
+    # sessions get collapsed into a single giant "Rest" segment.
     merged = []
     for rb in rest_breaks:
         if merged and rb["rest_start"] - merged[-1]["rest_end"] < _sec_to_idx(timestamps, merged[-1]["rest_end"], 120):
+            # Check the gap between the two rests for real work
+            gap_start = merged[-1]["rest_end"]
+            gap_end = rb["rest_start"]
+            if gap_end > gap_start + 3:
+                gap_spd = np.mean(spd[gap_start:gap_end])
+                gap_hr_max = np.max(hr[gap_start:gap_end])
+                gap_hr_min = np.min(hr[gap_start:gap_end])
+                # If the gap speed is significantly higher than the average rest
+                # speed (gap > 1.5x combined rest avg) AND HR surged, this is
+                # a real work interval. Compare against both rest blocks.
+                rest1_spd = merged[-1].get("rest_spd", 0) or np.mean(spd[merged[-1]["rest_start"]:merged[-1]["rest_end"]])
+                rest2_spd = rb.get("rest_spd", 0) or np.mean(spd[rb["rest_start"]:rb["rest_end"]])
+                avg_rest_spd = (rest1_spd + rest2_spd) / 2 if (rest1_spd + rest2_spd) > 0 else gap_spd
+                gap_speed_ratio = gap_spd / max(avg_rest_spd, 0.5)
+                hr_swing = gap_hr_max - gap_hr_min
+                # Real work: gap speed > 1.5x rest speed AND HR swings > 10 bpm
+                if gap_speed_ratio > 1.5 and hr_swing > 10:
+                    merged.append(rb)
+                    continue
+
             merged[-1]["rest_end"] = max(merged[-1]["rest_end"], rb["rest_end"])
             merged[-1]["rest_dur"] = (timestamps[merged[-1]["rest_end"]-1] - timestamps[merged[-1]["rest_start"]]).total_seconds()
         else:
@@ -1243,6 +1267,8 @@ def find_segments_adaptive(records):
         if rs > cursor + 2:
             seg = _build_segment(records, cursor, rs, lap_num, "Work")
             if seg:
+                seg["_start_idx"] = cursor
+                seg["_end_idx"] = rs
                 segments.append(seg)
                 lap_num += 1
 
@@ -1250,6 +1276,8 @@ def find_segments_adaptive(records):
         if re > rs + 1:
             seg = _build_segment(records, rs, re, lap_num, "Rest")
             if seg:
+                seg["_start_idx"] = rs
+                seg["_end_idx"] = re
                 segments.append(seg)
                 lap_num += 1
 
@@ -1259,10 +1287,15 @@ def find_segments_adaptive(records):
     if cursor + 2 < n:
         seg = _build_segment(records, cursor, n, lap_num, "Work")
         if seg:
+            seg["_start_idx"] = cursor
+            seg["_end_idx"] = n
             segments.append(seg)
 
-    # --- Post-process: trim, merge same-type ---
-    return _postprocess_segments(segments)
+    # --- Post-process: reclassify, merge, THEN split pace bursts ---
+    segments = _postprocess_segments(segments)
+    # Pace burst split runs AFTER merge so sprint segments don't get re-merged
+    segments = _split_pace_bursts(segments, records, spd, hr, timestamps)
+    return segments
 
 
 # --- HR Valley Helpers ---
@@ -1514,12 +1547,16 @@ def _find_segments_no_hr(records):
         if rs > cursor + 2:
             seg = _build_segment(records, cursor, rs, lap_num, "Work")
             if seg:
+                seg["_start_idx"] = cursor
+                seg["_end_idx"] = rs
                 segments.append(seg)
                 lap_num += 1
 
         if re > rs + 1:
             seg = _build_segment(records, rs, re, lap_num, "Rest")
             if seg:
+                seg["_start_idx"] = rs
+                seg["_end_idx"] = re
                 segments.append(seg)
                 lap_num += 1
 
@@ -1528,9 +1565,14 @@ def _find_segments_no_hr(records):
     if cursor + 2 < n:
         seg = _build_segment(records, cursor, n, lap_num, "Work")
         if seg:
+            seg["_start_idx"] = cursor
+            seg["_end_idx"] = n
             segments.append(seg)
 
-    return _postprocess_segments(segments)
+    # --- Post-process: reclassify, merge, split pace bursts ---
+    segments = _postprocess_segments(segments)
+    segments = _split_pace_bursts(segments, records, spd, np.zeros(n), timestamps)
+    return segments
 
 
 def _fallback_single_block(records):
@@ -1631,6 +1673,100 @@ def _merge_rest_breaks(existing, gaps, timestamps):
     return merged
 
 
+def _split_pace_bursts(segments, records, spd, hr, timestamps):
+    """
+    Split long Work segments at cadence bursts (sprints embedded in steady state).
+
+    Uses _start_idx / _end_idx stored on each segment during build.
+    Returns a NEW list — does not mutate input segments.
+    """
+    if not segments or len(records) < 10:
+        return list(segments)
+
+    cad_arr = np.zeros(len(records))
+    for i, r in enumerate(records):
+        cad_arr[i] = float(r.get("cadence_smooth", 0) or 0)
+
+    SPRINT_CADENCE = 30
+    MIN_BURST_SEC = 10
+    MIN_SEG_DUR = 120
+
+    result = []
+    lap_num = 1
+
+    for seg in segments:
+        si = seg.get("_start_idx")
+        ei = seg.get("_end_idx")
+        is_long_work = (si is not None and ei is not None
+                        and seg["type"] == "Work"
+                        and (seg.get("total_timer_time", 0) or 0) >= MIN_SEG_DUR
+                        and (ei - si) >= 20)
+
+        if not is_long_work:
+            # Pass through unchanged
+            seg.pop("_start_idx", None)
+            seg.pop("_end_idx", None)
+            seg["lap_number"] = lap_num
+            result.append(seg)
+            lap_num += 1
+            continue
+
+        # Scan for cadence bursts
+        seg_cad = cad_arr[si:ei]
+        bursts = []  # list of (start, end) index pairs relative to segment start
+        in_burst = False
+        b_start = 0
+        b_last = 0
+
+        for j in range(len(seg_cad)):
+            if seg_cad[j] > SPRINT_CADENCE:
+                if not in_burst:
+                    in_burst = True
+                    b_start = j
+                b_last = j
+            elif in_burst and (j - b_last) >= 4:
+                burst_dur = (timestamps[si + b_last] - timestamps[si + b_start]).total_seconds()
+                if burst_dur >= MIN_BURST_SEC:
+                    bursts.append((b_start, b_last + 1))
+                in_burst = False
+
+        if not bursts:
+            # No bursts found, keep original
+            seg.pop("_start_idx", None)
+            seg.pop("_end_idx", None)
+            seg["lap_number"] = lap_num
+            result.append(seg)
+            lap_num += 1
+            continue
+
+        # Split the segment at burst boundaries
+        cursor = 0
+        for bs, be in bursts:
+            if bs > cursor + 2:
+                sub = _build_segment(records, si + cursor, si + bs, lap_num, "Work")
+                if sub and sub.get("total_distance", 0) >= 10:
+                    result.append(sub)
+                    lap_num += 1
+            burst_seg = _build_segment(records, si + bs, si + be, lap_num, "Work")
+            if burst_seg and burst_seg.get("total_distance", 0) >= 10:
+                result.append(burst_seg)
+                lap_num += 1
+            cursor = be
+
+        # Remaining after last burst
+        if cursor < (ei - si) - 2:
+            rem = _build_segment(records, si + cursor, ei, lap_num, "Work")
+            if rem and rem.get("total_distance", 0) >= 10:
+                result.append(rem)
+                lap_num += 1
+
+    for s in result:
+        s.pop("_start_idx", None)
+        s.pop("_end_idx", None)
+
+    return result
+
+
 def _postprocess_segments(segments):
     """Trim noise, merge consecutive same-type segments."""
     if not segments:
@@ -1652,10 +1788,65 @@ def _postprocess_segments(segments):
         else:
             break
 
-    # Merge consecutive same-type
+    # --- Reclassify "Rest" segments that are actually active work ---
+    # In crew boats and interval sessions, "rest" between pieces can be at
+    # moderate pace (2:20-2:40/500m) with elevated HR — not genuine rest.
+    # If a "Rest" segment's average speed exceeds 70% of the session median
+    # work speed, it's active recovery / light work, not true rest.
+    if segments:
+        work_speeds = [s["avg_speed"] for s in segments
+                       if s["type"] == "Work" and s.get("avg_speed", 0) > 0.5]
+        if work_speeds:
+            import numpy as np
+            median_work_speed = np.median(work_speeds)
+            for seg in segments:
+                if seg["type"] == "Rest":
+                    seg_spd = seg.get("avg_speed", 0) or 0
+                    if seg_spd > median_work_speed * 0.70:
+                        seg["type"] = "Work"
+                        seg["phase"] = "Work"
+
+    # --- Absorb tiny transitional Work fragments ---
+    # Very short Work segments (<60s, <120m, cadence <30) at slow pace are
+    # typically boundary artifacts from the segmentation algorithm, not real
+    # work intervals. Merge them into the adjacent segment with closest pace.
+    ABSORB_MAX_SEC = 60
+    ABSORB_MAX_M = 120
+    ABSORB_MAX_CAD = 30
+    for i in range(len(segments) - 1, 0, -1):
+        seg = segments[i]
+        if (seg["type"] == "Work"
+                and (seg.get("total_timer_time", 0) or 0) < ABSORB_MAX_SEC
+                and (seg.get("total_distance", 0) or 0) < ABSORB_MAX_M
+                and (seg.get("avg_cadence", 0) or 0) <= ABSORB_MAX_CAD):
+            # Find adjacent segment with closer pace
+            prev = segments[i - 1]
+            cur_spd = seg.get("avg_speed", 0) or 0
+            prev_spd = prev.get("avg_speed", 0) or 0
+            # Merge with previous
+            _merge_two_segments(prev, seg)
+            segments.pop(i)
+
+    # Merge consecutive same-type, BUT don't merge if adjacent Work segments
+    # have drastically different paces (sprint vs. light work vs. steady state).
+    # Without this guard, reclassified "light work" between sprints gets merged
+    # with the sprints, losing the interval structure.
     merged = []
     for seg in segments:
         if merged and seg["type"] == merged[-1]["type"]:
+            # Check pace similarity for Work segments
+            if seg["type"] == "Work":
+                prev_spd = merged[-1].get("avg_speed", 0) or 0
+                cur_spd = seg.get("avg_speed", 0) or 0
+                if prev_spd > 0.5 and cur_spd > 0.5:
+                    ratio = max(prev_spd, cur_spd) / min(prev_spd, cur_spd)
+                    # Also check cadence: steady→sprint transitions should stay separate
+                    prev_cad = merged[-1].get("avg_cadence", 0) or 0
+                    cur_cad = seg.get("avg_cadence", 0) or 0
+                    cad_jump = max(prev_cad, cur_cad) > 30 and min(prev_cad, cur_cad) < 25
+                    if ratio > 1.3 or cad_jump:  # >30% speed OR cadence spike = different intensity
+                        merged.append(seg)
+                        continue
             _merge_two_segments(merged[-1], seg)
         else:
             merged.append(seg)
@@ -1683,6 +1874,13 @@ def _merge_two_segments(prev, seg):
     seg_cad = seg.get("avg_cadence") or 0
     if prev_cad and seg_cad:
         prev["avg_cadence"] = int(round((prev_cad * (prev_tt - seg_tt) + seg_cad * seg_tt) / prev_tt))
+    # Preserve index range across merges
+    if "_start_idx" in prev and "_end_idx" in seg:
+        prev["_end_idx"] = seg["_end_idx"]
+    elif "_start_idx" not in prev and "_start_idx" in seg:
+        prev["_start_idx"] = seg["_start_idx"]
+    if "_end_idx" not in prev and "_end_idx" in seg:
+        prev["_end_idx"] = seg["_end_idx"]
 
 
 def _make_compat_chunk(seg_records):
