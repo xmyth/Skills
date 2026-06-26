@@ -1727,7 +1727,13 @@ def _split_pace_bursts(segments, records, spd, hr, timestamps):
             elif in_burst and (j - b_last) >= 4:
                 burst_dur = (timestamps[si + b_last] - timestamps[si + b_start]).total_seconds()
                 if burst_dur >= MIN_BURST_SEC:
-                    bursts.append((b_start, b_last + 1))
+                    # Validate: a real sprint must have significantly higher
+                    # speed than the surrounding steady state. Warmup cadence
+                    # spikes (30+ spm at slow pace) are NOT sprints.
+                    burst_spd = np.mean(spd[si + b_start:si + b_last + 1])
+                    seg_avg_spd = np.mean(spd[si:ei])
+                    if burst_spd > seg_avg_spd * 1.15:
+                        bursts.append((b_start, b_last + 1))
                 in_burst = False
 
         if not bursts:
