@@ -4106,15 +4106,18 @@ def generate_xhs_page1(data, output_dir, file_prefix):
         speeds = [float(l.get("avg_speed",0)) for l in wlaps if float(l.get("avg_speed",0))>0.5]
         if speeds: aps = 500/(sum(speeds)/len(speeds))
     ps = f"{int(aps//60)}:{int(aps%60):02d}" if aps>0 else "--:--"
-    tspm=thr=tdps=cnt=0
+    tspm=tdps=cnt=0
+    hr_prod=0; hr_time=0
     for l in laps:
         spm=float(l.get("avg_cadence",0)); hr=float(l.get("avg_heart_rate",0))
         spd=float(l.get("avg_speed",0))
+        t=float(l.get("total_timer_time",0))
         if spm>0:
             tspm+=spm; cnt+=1
             if spd>0.5 and spm>0: tdps+=spd/(spm/60)
-            if hr>0: thr+=hr
-    asp = tspm/cnt if cnt>0 else 0; ahr = thr/cnt if cnt>0 else 0; adp = tdps/cnt if cnt>0 else 0
+        if l.get("type","Work")!="Rest" and hr>0 and t>0:
+            hr_prod+=hr*t; hr_time+=t
+    asp = tspm/cnt if cnt>0 else 0; ahr = int(hr_prod/hr_time) if hr_time>0 else 0; adp = tdps/cnt if cnt>0 else 0
     hero_h = 260
     hero = Image.new("RGBA", (img_width, hero_h))
     hd = ImageDraw.Draw(hero)
@@ -4220,14 +4223,18 @@ def generate_xhs_page2(data, output_dir, file_prefix, review_text=""):
         speeds = [float(l.get("avg_speed",0)) for l in wlaps if float(l.get("avg_speed",0))>0.5]
         if speeds: aps = 500/(sum(speeds)/len(speeds))
     ps = f"{int(aps//60)}:{int(aps%60):02d}" if aps>0 else "--:--"
-    tspm=thr=tdps=cnt=0
+    tspm=tdps=cnt=0
+    hr_prod=0; hr_time=0
     for l in laps:
         spm=float(l.get("avg_cadence",0)); hr=float(l.get("avg_heart_rate",0))
         spd=float(l.get("avg_speed",0))
-        if spm>0: tspm+=spm; cnt+=1
-        if spd>0.5 and spm>0: tdps+=spd/(spm/60)
-        if hr>0: thr+=hr
-    asp = tspm/cnt if cnt>0 else 0; ahr = thr/cnt if cnt>0 else 0; adp = tdps/cnt if cnt>0 else 0
+        t=float(l.get("total_timer_time",0))
+        if spm>0:
+            tspm+=spm; cnt+=1
+            if spd>0.5 and spm>0: tdps+=spd/(spm/60)
+        if l.get("type","Work")!="Rest" and hr>0 and t>0:
+            hr_prod+=hr*t; hr_time+=t
+    asp = tspm/cnt if cnt>0 else 0; ahr = int(hr_prod/hr_time) if hr_time>0 else 0; adp = tdps/cnt if cnt>0 else 0
     hero_h = 260
     hero = Image.new("RGBA", (img_width, hero_h))
     hd = ImageDraw.Draw(hero)
