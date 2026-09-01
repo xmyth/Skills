@@ -1797,20 +1797,42 @@ def _postprocess_segments(segments):
     # --- Reclassify "Rest" segments that are actually active work ---
     # In crew boats and interval sessions, "rest" between pieces can be at
     # moderate pace (2:20-2:40/500m) with elevated HR — not genuine rest.
-    # If a "Rest" segment's average speed exceeds 70% of the session median
+    # If a "Rest" segment's average speed exceeds 85% of the session median
     # work speed, it's active recovery / light work, not true rest.
+    # (Raised from 70% so short turn-around / genuine rest segments with a
+    # moderate average speed are not misclassified as work.)
     if segments:
         work_speeds = [s["avg_speed"] for s in segments
                        if s["type"] == "Work" and s.get("avg_speed", 0) > 0.5]
         if work_speeds:
             import numpy as np
             median_work_speed = np.median(work_speeds)
-            for seg in segments:
-                if seg["type"] == "Rest":
-                    seg_spd = seg.get("avg_speed", 0) or 0
-                    if seg_spd > median_work_speed * 0.70:
-                        seg["type"] = "Work"
-                        seg["phase"] = "Work"
+            for i, seg in enumerate(segments):
+                if seg["type"] != "Rest":
+                    continue
+                seg_spd = seg.get("avg_speed", 0) or 0
+                if seg_spd <= median_work_speed * 0.85:
+                    continue
+                # --- Guard: keep short genuine rest segments as Rest ---
+                # A short segment (turn-around / drift) can have a moderate
+                # average speed because the segment boundary wraps in faster
+                # records, but its HR drops well below the adjacent work
+                # segments. In that case it is genuine rest, not light work.
+                seg_dist = seg.get("total_distance", 0) or 0
+                seg_time = seg.get("total_timer_time", 0) or 0
+                seg_hr = seg.get("avg_heart_rate", 0) or 0
+                if seg_dist < 250 and seg_time < 90 and seg_hr > 0:
+                    # Average HR of adjacent non-rest segments
+                    adj_hrs = []
+                    for j in (i - 1, i + 1):
+                        if 0 <= j < len(segments) and segments[j]["type"] != "Rest":
+                            h = segments[j].get("avg_heart_rate", 0) or 0
+                            if h > 0:
+                                adj_hrs.append(h)
+                    if adj_hrs and seg_hr < (sum(adj_hrs) / len(adj_hrs)) - 8:
+                        continue  # genuine rest — keep as Rest
+                seg["type"] = "Work"
+                seg["phase"] = "Work"
 
     # --- Absorb tiny transitional Work fragments ---
     # Very short Work segments (<60s, <120m, cadence <30) at slow pace are
@@ -2105,98 +2127,6 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
     sub_sport = session.get("sub_sport", "")
     is_indoor = sub_sport == "indoor_rowing"
     
-    # Calculate aggregate metrics
-    steady_laps = [l for l in laps if l.get("total_distance", 0) > 300 and l.get("avg_speed", 0) > 1.5]
-    dps_values = []
-    pace_values = []
-    cadence_values = []
-    
-    for l in steady_laps:
-        s = l.get("avg_speed", 0)
-        r = l.get("avg_cadence", 0)
-        if r > 0:
-            dps_values.append(s / (r/60))
-        if s > 0:
-            pace_values.append(500 / s)
-        cadence_values.append(r)
-    
-    avg_dps = sum(dps_values)/len(dps_values) if dps_values else 0
-    avg_pace = sum(pace_values)/len(pace_values) if pace_values else 0
-    # Calculate Avg HR (Weighted by active time)
-    hr_prod_sum = 0
-    active_time_sum = 0
-    for l in laps:
-        # Check if active
-        is_rest = False
-        # Use our updated 'type' if available, otherwise heuristics
-        if l.get("type") == "Rest": is_rest = True
-        
-        # Simple heuristic fallback if type not set yet (though it should be)
-        if not is_rest:
-             dur = l.get("total_timer_time", 0)
-             hr = l.get("avg_heart_rate", 0)
-             if hr > 0 and dur > 0:
-                 hr_prod_sum += hr * dur
-                 active_time_sum += dur
-
-    avg_hr_weighted = hr_prod_sum / active_time_sum if active_time_sum > 0 else 0
-
-    avg_dps = sum(dps_values)/len(dps_values) if dps_values else 0
-    avg_pace = sum(pace_values)/len(pace_values) if pace_values else 0
-    avg_cadence = sum(cadence_values)/len(cadence_values) if cadence_values else 0
-    
-    # Prepare analysis summary
-    analysis_summary = {
-        "session_info": {
-            "total_distance_km": session.get("total_distance", 0) / 1000,
-            "total_time_min": session.get("total_elapsed_time", 0) / 60,
-            "start_time": session.get("start_time", ""),
-            "location": data.get("location_name") or session.get("city") or "Unknown",
-            "city": session.get("city", ""),
-            "weather": session.get("weather", ""),
-            "estimated_current_mps": data.get("estimated_current_mps", 0),
-            "current_direction": data.get("current_direction", "")
-        },
-        "aggregated_metrics": {
-            "avg_dps": round(avg_dps, 1),
-            "avg_pace_per_500m": round(avg_pace, 1),
-            "avg_cadence": round(avg_cadence, 1),
-            "avg_heart_rate": int(avg_hr_weighted),
-            "num_segments": len(laps),
-            "num_long_steady": len([l for l in laps if l.get("total_distance", 0) > 1500])
-        },
-        "segments": [
-            {
-                "number": l.get("lap_number", i+1),
-                "distance_m": l.get("total_distance", 0),
-                "time_sec": l.get("total_timer_time", 0),
-                "avg_pace": l.get("avg_500m_split", "N/A"),
-                "avg_cadence": l.get("avg_cadence", 0),
-                "avg_heart_rate": l.get("avg_heart_rate", 0),
-                "min_heart_rate": l.get("min_heart_rate", 0),
-                "max_heart_rate": l.get("max_heart_rate", 0),
-                "dps": round(l.get("avg_speed", 0) / (l.get("avg_cadence", 0) / 60), 1) if l.get("avg_cadence", 0) > 0 else "N/A",
-                "type": l.get("type") or "Unknown",
-                "direction": l.get("direction", ""),
-                "current_mps": l.get("current_mps", 0)
-            }
-            for i, l in enumerate(laps)
-        ],
-        "best_efforts": {
-            "best_500m": analysis.get("best_500m", {}),
-            "best_1k": analysis.get("best_1k", {}),
-            "best_2k": analysis.get("best_2k", {}),
-            "best_4k": analysis.get("best_4k", {}),
-            "best_10k": analysis.get("best_10k", {})
-        },
-        "heart_rate_analysis": data.get("heart_rate_analysis", {}),
-        # Include Raw Data for Regeneration
-        "laps": laps,
-        "session": session,
-        "processed_records": data.get("processed_records", []),
-        "location_name": data.get("location_name")
-    }
-    
     # --- INDOOR REST DETECTION ---
     # Concept2 FIT files use the `intensity` field in lap messages to indicate work/rest.
     # Values like 'rest', 'recovery', 'warmup', 'cooldown' indicate non-work intervals.
@@ -2300,6 +2230,100 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
     
     data["laps"] = laps
     # -------------------------------
+    
+    # Calculate aggregate metrics
+    steady_laps = [l for l in laps if l.get("total_distance", 0) > 300 and l.get("avg_speed", 0) > 1.5]
+    dps_values = []
+    pace_values = []
+    cadence_values = []
+    
+    for l in steady_laps:
+        s = l.get("avg_speed", 0)
+        r = l.get("avg_cadence", 0)
+        if r > 0:
+            dps_values.append(s / (r/60))
+        if s > 0:
+            pace_values.append(500 / s)
+        cadence_values.append(r)
+    
+    avg_dps = sum(dps_values)/len(dps_values) if dps_values else 0
+    avg_pace = sum(pace_values)/len(pace_values) if pace_values else 0
+    # Calculate Avg HR (Weighted by active time)
+    hr_prod_sum = 0
+    active_time_sum = 0
+    for l in laps:
+        # Check if active
+        is_rest = False
+        # Use our updated 'type' if available, otherwise heuristics
+        if l.get("type") == "Rest": is_rest = True
+        
+        # Simple heuristic fallback if type not set yet (though it should be)
+        if not is_rest:
+             dur = l.get("total_timer_time", 0)
+             hr = l.get("avg_heart_rate", 0)
+             if hr > 0 and dur > 0:
+                 hr_prod_sum += hr * dur
+                 active_time_sum += dur
+
+    avg_hr_weighted = hr_prod_sum / active_time_sum if active_time_sum > 0 else 0
+
+    avg_dps = sum(dps_values)/len(dps_values) if dps_values else 0
+    avg_pace = sum(pace_values)/len(pace_values) if pace_values else 0
+    avg_cadence = sum(cadence_values)/len(cadence_values) if cadence_values else 0
+    
+    # Prepare analysis summary
+    analysis_summary = {
+        "session_info": {
+            "total_distance_km": session.get("total_distance", 0) / 1000,
+            "total_time_min": session.get("total_elapsed_time", 0) / 60,
+            "start_time": session.get("start_time", ""),
+            "location": data.get("location_name") or session.get("city") or "Unknown",
+            "city": session.get("city", ""),
+            "weather": session.get("weather", ""),
+            "estimated_current_mps": data.get("estimated_current_mps", 0),
+            "current_direction": data.get("current_direction", "")
+        },
+        "aggregated_metrics": {
+            "avg_dps": round(avg_dps, 1),
+            "avg_pace_per_500m": round(avg_pace, 1),
+            "avg_cadence": round(avg_cadence, 1),
+            "avg_heart_rate": int(avg_hr_weighted),
+            "num_segments": len(laps),
+            "num_long_steady": len([l for l in laps if l.get("total_distance", 0) > 1500])
+        },
+        "segments": [
+            {
+                "number": l.get("lap_number", i+1),
+                "distance_m": l.get("total_distance", 0),
+                "time_sec": l.get("total_timer_time", 0),
+                "avg_pace": l.get("avg_500m_split", "N/A"),
+                "avg_cadence": l.get("avg_cadence", 0),
+                "avg_heart_rate": l.get("avg_heart_rate", 0),
+                "min_heart_rate": l.get("min_heart_rate", 0),
+                "max_heart_rate": l.get("max_heart_rate", 0),
+                "dps": round(l.get("avg_speed", 0) / (l.get("avg_cadence", 0) / 60), 1) if l.get("avg_cadence", 0) > 0 else "N/A",
+                "type": l.get("type") or "Unknown",
+                "direction": l.get("direction", ""),
+                "current_mps": l.get("current_mps", 0)
+            }
+            for i, l in enumerate(laps)
+        ],
+        "best_efforts": {
+            "best_500m": analysis.get("best_500m", {}),
+            "best_1k": analysis.get("best_1k", {}),
+            "best_2k": analysis.get("best_2k", {}),
+            "best_4k": analysis.get("best_4k", {}),
+            "best_10k": analysis.get("best_10k", {})
+        },
+        "heart_rate_analysis": data.get("heart_rate_analysis", {}),
+        # Include Raw Data for Regeneration
+        "laps": laps,
+        "session": session,
+        "processed_records": data.get("processed_records", []),
+        "location_name": data.get("location_name")
+    }
+    
+
     
     # Determine Prefix (ROW/ERG)
     prefix = "ERG" # Default
