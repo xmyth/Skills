@@ -1855,6 +1855,24 @@ def _postprocess_segments(segments):
             _merge_two_segments(prev, seg)
             segments.pop(i)
 
+    # The loop above never reaches index 0, so a leading tiny Work fragment
+    # (session lead-in before the first real piece) would survive as a bogus
+    # standalone segment. It has no previous neighbour, so absorb it forward
+    # into the following segment instead.
+    if len(segments) >= 2:
+        lead = segments[0]
+        if (lead["type"] == "Work"
+                and (lead.get("total_timer_time", 0) or 0) < ABSORB_MAX_SEC
+                and (lead.get("total_distance", 0) or 0) < ABSORB_MAX_M
+                and (lead.get("avg_cadence", 0) or 0) <= ABSORB_MAX_CAD):
+            nxt = segments[1]
+            # Merging forward: the fragment sits at the START of the merged
+            # segment, so the kept segment must inherit its _start_idx.
+            _merge_two_segments(nxt, lead)
+            if "_start_idx" in lead:
+                nxt["_start_idx"] = lead["_start_idx"]
+            segments.pop(0)
+
     # Merge consecutive same-type, BUT don't merge if adjacent Work segments
     # have drastically different paces (sprint vs. light work vs. steady state).
     # Without this guard, reclassified "light work" between sprints gets merged
