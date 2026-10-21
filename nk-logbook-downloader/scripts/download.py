@@ -26,7 +26,10 @@ JWT_FILE = SKILL_DIR / ".jwt"
 PROFILE_DIR = SKILL_DIR / "profile"
 
 FIT_FILENAME_RE = re.compile(
-    r"^SpdCoach \d+ (\d{8}) (\d{4})(AM|PM)\.fit$"
+    # Legacy exports carry a device serial ("SpdCoach 2763073 20250702 0755AM.fit");
+    # current ones don't ("SpdCoach 20260708 0633AM.fit"). The serial is optional
+    # so both formats dedup — otherwise every serial-less file re-downloads each run.
+    r"^SpdCoach (?:\d+ )?(\d{8}) (\d{4})(AM|PM)\.fit$"
 )
 
 
