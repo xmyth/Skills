@@ -219,10 +219,39 @@ def calculate_split(speed_m_s):
         return "-"
     
     split_seconds = 500 / speed_m_s
-    minutes = int(split_seconds // 60)
-    seconds = int(split_seconds % 60)
-    tenth = int((split_seconds - int(split_seconds)) * 10)
+    # Round to tenths (not truncate) so this agrees with aggregated_metrics,
+    # which stores round(pace, 1). Truncation made 209.15 render as 3:29.1
+    # while the JSON said 209.2. Carrying tenths == 10 into the next second
+    # keeps 119.97 from displaying as "1:59.10".
+    total_tenths = int(round(split_seconds * 10))
+    minutes, rem = divmod(total_tenths, 600)
+    seconds, tenth = divmod(rem, 10)
     return f"{minutes}:{seconds:02}.{tenth}"
+
+def work_aggregate(laps):
+    """Distance/time-weighted aggregate over non-rest laps.
+
+    Returns (work_distance_m, work_time_s, avg_speed_m_s). Pace must be derived
+    as 500/avg_speed: averaging per-segment speeds (or per-segment paces) gives
+    every lap equal weight, which lets a single short sprint outweigh a long
+    steady piece. Weighting by time keeps the result equal to total work
+    distance divided by total work time.
+    """
+    work = []
+    for l in laps or []:
+        if l.get("type") == "Rest":
+            continue
+        t = float(l.get("total_timer_time", 0) or 0)
+        d = float(l.get("total_distance", 0) or 0)
+        if t > 0 and d > 0:
+            work.append((d, t))
+    if not work:
+        return 0.0, 0.0, 0.0
+    dist = sum(d for d, _ in work)
+    time = sum(t for _, t in work)
+    speed = dist / time if time > 0 else 0.0
+    return dist, time, speed
+
 
 def calculate_weighted_average(records, key):
     """
@@ -2265,7 +2294,12 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
         cadence_values.append(r)
     
     avg_dps = sum(dps_values)/len(dps_values) if dps_values else 0
-    avg_pace = sum(pace_values)/len(pace_values) if pace_values else 0
+    # Pace is derived from distance/time so long pieces dominate short sprints;
+    # an unweighted mean of per-lap paces would let one 400m surge set the day.
+    _wd, _wt, _wspeed = work_aggregate(laps)
+    avg_pace = 500 / _wspeed if _wspeed > 0 else 0
+    if avg_pace <= 0 and pace_values:
+        avg_pace = sum(pace_values)/len(pace_values)
     # Calculate Avg HR (Weighted by active time)
     hr_prod_sum = 0
     active_time_sum = 0
@@ -2285,8 +2319,6 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
 
     avg_hr_weighted = hr_prod_sum / active_time_sum if active_time_sum > 0 else 0
 
-    avg_dps = sum(dps_values)/len(dps_values) if dps_values else 0
-    avg_pace = sum(pace_values)/len(pace_values) if pace_values else 0
     avg_cadence = sum(cadence_values)/len(cadence_values) if cadence_values else 0
     
     # Prepare analysis summary
@@ -4141,12 +4173,12 @@ def generate_xhs_page1(data, output_dir, file_prefix):
             if weather: date_str += f" · {weather}"
         except: pass
     wlaps = [l for l in laps if l.get("type")!="Rest"]
-    td = sum(float(l.get("total_distance",0)) for l in laps)/1000
-    tt = sum(float(l.get("total_timer_time",0)) for l in laps)/60
-    aps = 0
-    if wlaps:
-        speeds = [float(l.get("avg_speed",0)) for l in wlaps if float(l.get("avg_speed",0))>0.5]
-        if speeds: aps = 500/(sum(speeds)/len(speeds))
+    # Header distance/time/pace all use work-segment totals so the three figures
+    # on the card are mutually consistent (and match the Markdown report).
+    _wd, _wt, _wspeed = work_aggregate(laps)
+    td = _wd/1000
+    tt = _wt/60
+    aps = 500/_wspeed if _wspeed>0 else 0
     ps = f"{int(aps//60)}:{int(aps%60):02d}" if aps>0 else "--:--"
     tspm=tdps=cnt=0
     hr_prod=0; hr_time=0
@@ -4258,12 +4290,12 @@ def generate_xhs_page2(data, output_dir, file_prefix, review_text=""):
             if weather: date_str += f" · {weather}"
         except: pass
     wlaps = [l for l in laps if l.get("type")!="Rest"]
-    td = sum(float(l.get("total_distance",0)) for l in laps)/1000
-    tt = sum(float(l.get("total_timer_time",0)) for l in laps)/60
-    aps = 0
-    if wlaps:
-        speeds = [float(l.get("avg_speed",0)) for l in wlaps if float(l.get("avg_speed",0))>0.5]
-        if speeds: aps = 500/(sum(speeds)/len(speeds))
+    # Header distance/time/pace all use work-segment totals so the three figures
+    # on the card are mutually consistent (and match the Markdown report).
+    _wd, _wt, _wspeed = work_aggregate(laps)
+    td = _wd/1000
+    tt = _wt/60
+    aps = 500/_wspeed if _wspeed>0 else 0
     ps = f"{int(aps//60)}:{int(aps%60):02d}" if aps>0 else "--:--"
     tspm=tdps=cnt=0
     hr_prod=0; hr_time=0
