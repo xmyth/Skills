@@ -275,6 +275,26 @@ def work_dps(laps):
     return dist / strokes if strokes > 0 else 0.0
 
 
+def work_cadence(laps):
+    """Time-weighted average rating over work laps: sum(SPM * time) / sum(time).
+
+    Laps with no rating (rest, or a sensor gap) are excluded: counting them in
+    the denominator would drag the average down, while an unweighted mean would
+    let a short high-rate set cancel a long steady piece.
+    """
+    prod = 0.0
+    time = 0.0
+    for l in laps or []:
+        if l.get("type") == "Rest":
+            continue
+        spm = float(l.get("avg_cadence", 0) or 0)
+        t = float(l.get("total_timer_time", 0) or 0)
+        if spm > 0 and t > 0:
+            prod += spm * t
+            time += t
+    return prod / time if time > 0 else 0.0
+
+
 def calculate_weighted_average(records, key):
     """
     Calculate time-weighted average for a specific metric key using Trapezoidal rule.
@@ -2345,7 +2365,11 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
 
     avg_hr_weighted = hr_prod_sum / active_time_sum if active_time_sum > 0 else 0
 
-    avg_cadence = sum(cadence_values)/len(cadence_values) if cadence_values else 0
+    # Rating is time-weighted so it stays consistent with the weighted pace and
+    # DPS: pace, rate and DPS then satisfy pace = 500 / (rate * DPS).
+    avg_cadence = work_cadence(laps)
+    if avg_cadence <= 0 and cadence_values:
+        avg_cadence = sum(cadence_values)/len(cadence_values)
     
     # Prepare analysis summary
     analysis_summary = {
@@ -4217,7 +4241,12 @@ def generate_xhs_page1(data, output_dir, file_prefix):
             if spd>0.5 and spm>0: tdps+=spd/(spm/60)
         if l.get("type","Work")!="Rest" and hr>0 and t>0:
             hr_prod+=hr*t; hr_time+=t
-    asp = tspm/cnt if cnt>0 else 0; ahr = int(hr_prod/hr_time) if hr_time>0 else 0
+    # Rating and DPS are both time-weighted so they agree with the pace shown
+    # beside them: pace = 500 / (rate * DPS).
+    asp = work_cadence(laps)
+    if asp <= 0 and cnt > 0:
+        asp = tspm/cnt
+    ahr = int(hr_prod/hr_time) if hr_time>0 else 0
     # DPS = total work distance / total strokes (see work_dps), so the long
     # steady piece dominates rather than each lap counting equally.
     adp = work_dps(laps)
@@ -4339,7 +4368,12 @@ def generate_xhs_page2(data, output_dir, file_prefix, review_text=""):
             if spd>0.5 and spm>0: tdps+=spd/(spm/60)
         if l.get("type","Work")!="Rest" and hr>0 and t>0:
             hr_prod+=hr*t; hr_time+=t
-    asp = tspm/cnt if cnt>0 else 0; ahr = int(hr_prod/hr_time) if hr_time>0 else 0
+    # Rating and DPS are both time-weighted so they agree with the pace shown
+    # beside them: pace = 500 / (rate * DPS).
+    asp = work_cadence(laps)
+    if asp <= 0 and cnt > 0:
+        asp = tspm/cnt
+    ahr = int(hr_prod/hr_time) if hr_time>0 else 0
     # DPS = total work distance / total strokes (see work_dps), so the long
     # steady piece dominates rather than each lap counting equally.
     adp = work_dps(laps)
