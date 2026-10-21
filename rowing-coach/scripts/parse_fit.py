@@ -253,6 +253,28 @@ def work_aggregate(laps):
     return dist, time, speed
 
 
+def work_dps(laps):
+    """Distance per stroke across work laps: total distance / total strokes.
+
+    Strokes are the time-integral of rating (SPM * minutes). Averaging each lap's
+    DPS unweighted lets a brief high-rate surge outweigh a long steady piece,
+    the same bias that affected pace. Rest laps never count: they carry distance
+    from drift but no strokes.
+    """
+    dist = 0.0
+    strokes = 0.0
+    for l in laps or []:
+        if l.get("type") == "Rest":
+            continue
+        spm = float(l.get("avg_cadence", 0) or 0)
+        t = float(l.get("total_timer_time", 0) or 0)
+        d = float(l.get("total_distance", 0) or 0)
+        if spm > 0 and t > 0 and d > 0:
+            dist += d
+            strokes += spm * t / 60.0
+    return dist / strokes if strokes > 0 else 0.0
+
+
 def calculate_weighted_average(records, key):
     """
     Calculate time-weighted average for a specific metric key using Trapezoidal rule.
@@ -2293,7 +2315,11 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
             pace_values.append(500 / s)
         cadence_values.append(r)
     
-    avg_dps = sum(dps_values)/len(dps_values) if dps_values else 0
+    # DPS is total distance / total strokes for the same reason pace is
+    # distance/time: otherwise a short sharp set outweighs the long steady piece.
+    avg_dps = work_dps(laps)
+    if avg_dps <= 0 and dps_values:
+        avg_dps = sum(dps_values)/len(dps_values)
     # Pace is derived from distance/time so long pieces dominate short sprints;
     # an unweighted mean of per-lap paces would let one 400m surge set the day.
     _wd, _wt, _wspeed = work_aggregate(laps)
@@ -4191,7 +4217,12 @@ def generate_xhs_page1(data, output_dir, file_prefix):
             if spd>0.5 and spm>0: tdps+=spd/(spm/60)
         if l.get("type","Work")!="Rest" and hr>0 and t>0:
             hr_prod+=hr*t; hr_time+=t
-    asp = tspm/cnt if cnt>0 else 0; ahr = int(hr_prod/hr_time) if hr_time>0 else 0; adp = tdps/cnt if cnt>0 else 0
+    asp = tspm/cnt if cnt>0 else 0; ahr = int(hr_prod/hr_time) if hr_time>0 else 0
+    # DPS = total work distance / total strokes (see work_dps), so the long
+    # steady piece dominates rather than each lap counting equally.
+    adp = work_dps(laps)
+    if adp <= 0 and cnt > 0:
+        adp = tdps/cnt
     hero_h = 260
     hero = Image.new("RGBA", (img_width, hero_h))
     hd = ImageDraw.Draw(hero)
@@ -4308,7 +4339,12 @@ def generate_xhs_page2(data, output_dir, file_prefix, review_text=""):
             if spd>0.5 and spm>0: tdps+=spd/(spm/60)
         if l.get("type","Work")!="Rest" and hr>0 and t>0:
             hr_prod+=hr*t; hr_time+=t
-    asp = tspm/cnt if cnt>0 else 0; ahr = int(hr_prod/hr_time) if hr_time>0 else 0; adp = tdps/cnt if cnt>0 else 0
+    asp = tspm/cnt if cnt>0 else 0; ahr = int(hr_prod/hr_time) if hr_time>0 else 0
+    # DPS = total work distance / total strokes (see work_dps), so the long
+    # steady piece dominates rather than each lap counting equally.
+    adp = work_dps(laps)
+    if adp <= 0 and cnt > 0:
+        adp = tdps/cnt
     hero_h = 260
     hero = Image.new("RGBA", (img_width, hero_h))
     hd = ImageDraw.Draw(hero)
