@@ -43,6 +43,13 @@ try:
     from PIL import Image, ImageDraw, ImageFont
     from pilmoji import Pilmoji
     PIL_AVAILABLE = True
+    # pilmoji fetches emoji from emojicdn.elk.sh by default, which is unreliable;
+    # prefer jsDelivr with a local cache so image rendering does not fail offline.
+    try:
+        import emoji_source
+        emoji_source.install()
+    except Exception:
+        pass
 except ImportError:
     PIL_AVAILABLE = False
 

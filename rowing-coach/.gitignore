@@ -12,6 +12,9 @@ ANALYSIS_*.json
 analysis_output.json
 analysis_*.json
 
+# Emoji artwork cache (regenerated on demand by emoji_source.py)
+.emoji-cache/
+
 # OS
 .DS_Store
 Thumbs.db
