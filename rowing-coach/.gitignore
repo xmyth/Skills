@@ -12,8 +12,9 @@ ANALYSIS_*.json
 analysis_output.json
 analysis_*.json
 
-# Emoji artwork cache (regenerated on demand by emoji_source.py)
-.emoji-cache/
+# Emoji artwork cache: committed on purpose so image rendering works with no
+# network. Refresh with scripts/prefetch_emoji.py if new emoji are introduced.
+# (.emoji-cache/ is tracked, do not ignore it)
 
 # OS
 .DS_Store
