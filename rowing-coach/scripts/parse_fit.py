@@ -430,44 +430,93 @@ def _hms_to_sec(txt):
 
 
 def _align_to_official(data, official_time):
-    """Scale segment times so they add up to the official result.
+    """Place the race boundaries from the trajectory, then split segments at them.
 
-    Device segments stop/start at sample boundaries, so their sum falls short of
-    the chip time (58:33 vs 58:45.54 on the 11-01 race). Scaling every segment by
-    the same factor keeps their relative shape while making the table reconcile
-    with the result, and each segment's pace is recomputed from its own distance
-    and the calibrated time.
+    Rather than scaling every segment by one factor, this locates the race on the
+    actual path: the window is [0, official] seconds from the first record, and
+    each interior boundary is the moment the boat passed that cumulative distance.
+    Wall-clock gaps between samples (the device dropped 7s + 9s during the turn on
+    the 11-01 race) therefore land in the segment where they happened instead of
+    being smeared evenly, and the segment times add up to the official result
+    because consecutive segments share their boundaries.
     """
     total_official = _hms_to_sec(official_time)
     laps = data.get("laps") or []
-    current = sum(float(l.get("total_timer_time", 0) or 0) for l in laps)
-    if total_official <= 0 or current <= 0:
+    if total_official <= 0 or not laps:
         return data
-    factor = total_official / current
-    scaled = [float(l.get("total_timer_time", 0) or 0) * factor for l in laps]
 
-    # Make the displayed segments add up to the official second count: round each
-    # one, then let the longest absorb the residual so the column sums exactly
-    # (otherwise truncating three sub-second values lost 1.5s).
+    # (seconds, cumulative distance) from the record stream
+    pts = []
+    t0 = None
+    for r in (data.get("processed_records") or []):
+        ts = r.get("dt") or r.get("timestamp")
+        if isinstance(ts, str):
+            try:
+                ts = datetime.datetime.fromisoformat(ts)
+            except ValueError:
+                continue
+        dv = r.get("distance")
+        if ts is None or dv is None:
+            continue
+        if t0 is None:
+            t0 = ts
+        pts.append(((ts - t0).total_seconds(), float(dv)))
+
+    if len(pts) < 2:
+        # no trajectory: fall back to proportional scaling
+        current = sum(float(l.get("total_timer_time", 0) or 0) for l in laps)
+        factor = total_official / current if current > 0 else 1.0
+        for l in laps:
+            l["total_timer_time"] = float(l.get("total_timer_time", 0) or 0) * factor
+        data.setdefault("session", {})["official_time"] = official_time
+        return data
+
+    d_off = pts[0][1]
+    pts = [(t, d - d_off) for t, d in pts]
+
+    def time_at(dist):
+        """First moment the boat had covered `dist` metres."""
+        prev = pts[0]
+        for t, d in pts:
+            if d >= dist:
+                if d == prev[1]:
+                    return t
+                ratio = (dist - prev[1]) / (d - prev[1])
+                return prev[0] + ratio * (t - prev[0])
+            prev = (t, d)
+        return pts[-1][0]
+
+    cum = 0.0
+    bounds = [0.0]
+    for l in laps[:-1]:
+        cum += float(l.get("total_distance", 0) or 0)
+        bounds.append(min(max(time_at(cum), bounds[-1]), total_official))
+    bounds.append(total_official)
+
+    for l, a, b in zip(laps, bounds[:-1], bounds[1:]):
+        dur = max(0.0, b - a)
+        d = float(l.get("total_distance", 0) or 0)
+        l["_aligned_time"] = dur
+        if dur > 0:
+            l["avg_speed"] = d / dur
+            l["avg_500m_split"] = calculate_split(d / dur)
+
+    # integer seconds that add up exactly to the official second count
+    scaled = [l.get("_aligned_time", 0.0) for l in laps]
     target = int(total_official)
     rounded = [int(round(t)) for t in scaled]
     if rounded:
         diff = target - sum(rounded)
         longest = max(range(len(rounded)), key=lambda i: rounded[i])
-        rounded[longest] += diff
-        rounded[longest] = max(0, rounded[longest])
-
-    for l, t, rt in zip(laps, scaled, rounded):
-        d = float(l.get("total_distance", 0) or 0)
+        rounded[longest] = max(0, rounded[longest] + diff)
+    for l, rt in zip(laps, rounded):
         l["total_timer_time"] = rt
         l["total_elapsed_time"] = rt
-        if rt > 0:
-            l["avg_speed"] = d / rt
-            l["avg_500m_split"] = calculate_split(d / rt)
+
     session = data.setdefault("session", {})
-    session["total_timer_time"] = total_official
-    session["total_elapsed_time"] = total_official
     session["official_time"] = official_time
+    session["total_timer_time"] = sum(rounded)
+    session["total_elapsed_time"] = total_official
     dist = sum(float(l.get("total_distance", 0) or 0) for l in laps)
     if total_official > 0:
         session["avg_speed"] = dist / total_official
