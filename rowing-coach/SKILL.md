@@ -78,6 +78,16 @@ The `parse_fit.py` script uses a multi-layered adaptive segmentation approach:
 
 All thresholds are relative and adaptive — no hardcoded pace or HR values.
 
+## Data quality check before reporting
+
+Always compare the record stream against the session summary. If the records span
+far less than `session.total_elapsed_time` — or `sum(laps.distance)` sits far
+below `session.total_distance` — the recording was **truncated**, typically a
+SpeedCoach whose memory filled mid-session. The summary is genuine; the samples
+are missing. Do not rescale or interpolate, and do not publish a normal report
+from it. See the `nk-logbook-downloader` skill for the full signature and the
+`truncated: true` marker convention.
+
 ## Resources
 
 ### Scripts

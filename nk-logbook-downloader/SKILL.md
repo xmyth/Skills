@@ -43,6 +43,47 @@ On first run, if no `.jwt` exists, the script opens a Chromium browser for manua
 - **API unreachable:** Script exits with error message
 - **Single download fails:** Skipped and reported
 
+### Known data problems
+
+#### SpeedCoach memory full → recording truncated
+
+When the unit's memory fills mid-session it stops writing samples, but still
+writes a **complete session summary** at the end. The export therefore looks
+self-contradictory: a full distance/duration in the summary, while the record
+stream covers only the first part of the row.
+
+Signature (2026-10-20 session):
+
+| Field | Value |
+| :--- | ---: |
+| `session.total_distance` | 14161 m |
+| `session.total_elapsed_time` | 4157 s |
+| record stream span | 830 s |
+| recorded distance | 2121 m (≈15% of the row) |
+| `sum(laps.distance)` | 2022 m |
+
+**How to detect** — compare the record span with the session elapsed time, or
+`sum(laps.distance)` with `session.total_distance`. A large shortfall means
+truncation, not a corrupt file: the FIT parses fine and the summary is genuine.
+
+**How to handle**
+
+- The missing part cannot be recovered from the export — do not treat the gap as
+  a data error and do not rescale or interpolate it.
+- Do not produce a normal report from a truncated session: the segment table
+  would cover only the recorded fraction while the header quotes the full row.
+- Mark the analysed JSON so later batch statistics skip it:
+
+  ```json
+  "truncated": true,
+  "truncation": { "reason": "...", "records_span_s": 830,
+                  "recorded_fraction": 0.15, ... }
+  ```
+
+  Any script that walks `ROW_*.json` should skip entries with `truncated: true`.
+- Prevention: clear the SpeedCoach memory before races and long sessions.
+
+
 ## Example User Requests
 
 - "Download my latest workouts"
