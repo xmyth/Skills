@@ -5025,12 +5025,15 @@ def generate_combined_chart_image(data, chart_buf):
         if h_val > 0 and is_work:
             hr_sum += (h_val * t_val)
     
-    # Calculate Work Distance for Pace
-    work_dist = sum([l.get("total_distance", 0) for l in laps if l.get("type", "Work") != "Rest"])
+    # Totals shown in the header span every segment: a turn is still race time,
+    # so header distance/time/pace must not exclude it (it read 13.27km/58:13
+    # against the 13.32km/58:45 the rest of the report quotes).
+    total_dist_all = sum(float(l.get("total_distance", 0) or 0) for l in laps)
+    total_time_all = sum(float(l.get("total_timer_time", 0) or 0) for l in laps)
 
-    dist_km = work_dist / 1000
-    time_min = total_time / 60
-    avg_spd = work_dist / total_time if total_time > 0 else 0
+    dist_km = total_dist_all / 1000
+    time_min = total_time_all / 60
+    avg_spd = total_dist_all / total_time_all if total_time_all > 0 else 0
     avg_pace = calculate_split(avg_spd)
     
     avg_rate = int(cad_sum / total_time) if total_time > 0 else 0
