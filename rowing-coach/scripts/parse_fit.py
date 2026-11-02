@@ -220,6 +220,98 @@ def parse_fit(file_path):
 
     return data
 
+def _trim_session(data, seconds):
+    """Drop records and laps beyond `seconds` from the first record.
+
+    Used when the device kept recording after the finish (e.g. paddling back),
+    which otherwise inflates distance and drags the average pace down.
+
+    A lap that straddles the cut is clipped, and its distance is taken from the
+    record distance channel rather than scaled by time: the post-race segment is
+    a slow drift, so distance is far from linear in time (scaling by time cut a
+    13.3km session down to 10.8km).
+    """
+    recs = data.get("records") or []
+    if not recs or not seconds or seconds <= 0:
+        return data
+
+    def _ts(r):
+        v = r.get("timestamp") or r.get("dt")
+        if isinstance(v, str):
+            return datetime.datetime.fromisoformat(v)
+        return v
+
+    t0 = _ts(recs[0])
+    rel = []
+    kept = []
+    for r in recs:
+        t = _ts(r)
+        if t is None or t0 is None:
+            kept.append(r)
+            continue
+        secs = (t - t0).total_seconds()
+        rel.append((secs, r))
+        if secs <= seconds:
+            kept.append(r)
+    data["records"] = kept
+
+    def _dist_at(limit):
+        """Cumulative distance (from the distance channel) at `limit` seconds."""
+        d0 = None
+        last = None
+        for secs, r in rel:
+            if secs > limit:
+                break
+            dv = r.get("distance")
+            if dv is None:
+                continue
+            dv = float(dv)
+            if d0 is None:
+                d0 = dv
+            last = dv
+        if d0 is None or last is None:
+            return None
+        return last - d0
+
+    laps = data.get("laps") or []
+    out_laps = []
+    cum = 0.0
+    cum_dist_rec = 0.0
+    for l in laps:
+        t = float(l.get("total_timer_time", 0) or 0)
+        if cum + t <= seconds + 1e-6:
+            out_laps.append(l)
+            cum += t
+            continue
+        remain = seconds - cum
+        if remain > 0:
+            clipped = dict(l)
+            clipped["total_timer_time"] = remain
+            clipped["total_elapsed_time"] = min(
+                float(l.get("total_elapsed_time", remain) or remain), remain)
+            d_end = _dist_at(seconds)
+            d_start = _dist_at(cum)
+            if d_end is not None and d_start is not None and d_end >= d_start:
+                clipped["total_distance"] = d_end - d_start
+            else:  # no distance channel: fall back to linear scaling
+                clipped["total_distance"] = float(l.get("total_distance", 0) or 0) * (remain / t if t else 0)
+            clipped.pop("avg_speed", None)  # recomputed from the clipped values
+            out_laps.append(clipped)
+        break
+    if out_laps:
+        data["laps"] = out_laps
+
+    session = data.get("session") or {}
+    total_d = sum(float(l.get("total_distance", 0) or 0) for l in out_laps)
+    total_t = sum(float(l.get("total_timer_time", 0) or 0) for l in out_laps)
+    if out_laps:
+        session["total_distance"] = total_d
+        session["total_timer_time"] = total_t
+        session["total_elapsed_time"] = total_t
+        session["avg_speed"] = total_d / total_t if total_t > 0 else 0
+    return data
+
+
 def _start_time_from_filename(path):
     """Local start time encoded in an NK export filename, or None.
 
@@ -3923,6 +4015,9 @@ def main():
     parser.add_argument("--build-report", metavar="JSON_FILE", help="Build MD + images from JSON analysis")
     parser.add_argument("--review", type=str, default="", help="Coach review text (for --build-report)")
     parser.add_argument("--xhs-post", type=str, default="", help="XHS social media post text (for --build-report)")
+    parser.add_argument("--trim-seconds", type=float, default=None,
+                        help="Drop everything after N seconds from the first record "
+                             "(e.g. when the device kept recording past the finish)")
 
     
     args = parser.parse_args()
@@ -3990,6 +4085,10 @@ def main():
         parser.error("file_path is required")
 
     parsed_data = parse_fit(args.file_path)
+    if parsed_data and args.trim_seconds:
+        parsed_data = _trim_session(parsed_data, args.trim_seconds)
+        print(f"✂️ Trimmed to first {args.trim_seconds:.0f}s "
+              f"({sum(float(l.get('total_distance', 0) or 0) for l in parsed_data.get('laps') or [])/1000:.2f}km retained)")
 
     if parsed_data:
         analyzed_data = analyze_rowing(parsed_data, args.max_hr, args.resting_hr)
