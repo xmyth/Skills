@@ -220,19 +220,24 @@ def parse_fit(file_path):
 
     return data
 
-def _trim_session(data, seconds):
-    """Drop records and laps beyond `seconds` from the first record.
+def _trim_session(data, seconds=None, start_seconds=None):
+    """Keep only the [start_seconds, seconds] window measured from the first record.
 
-    Used when the device kept recording after the finish (e.g. paddling back),
-    which otherwise inflates distance and drags the average pace down.
+    Two real cases this handles on NK exports:
+      - the device kept recording after the finish (paddling back), inflating
+        distance and dragging the average pace down;
+      - recording started before the race (crew holding at the start line),
+        adding idle time to the elapsed figure.
 
-    A lap that straddles the cut is clipped, and its distance is taken from the
-    record distance channel rather than scaled by time: the post-race segment is
-    a slow drift, so distance is far from linear in time (scaling by time cut a
-    13.3km session down to 10.8km).
+    Laps are clipped at both boundaries, and a clipped lap's distance comes from
+    the record distance channel rather than being scaled by time: the dead time
+    around a race is a slow drift, so distance is far from linear in time
+    (time-scaling once cut a 13.3km session to 10.8km).
     """
     recs = data.get("records") or []
-    if not recs or not seconds or seconds <= 0:
+    start_sec = float(start_seconds or 0)
+    end_sec = float(seconds) if seconds else None
+    if not recs or (start_sec <= 0 and end_sec is None):
         return data
 
     def _ts(r):
@@ -251,7 +256,7 @@ def _trim_session(data, seconds):
             continue
         secs = (t - t0).total_seconds()
         rel.append((secs, r))
-        if secs <= seconds:
+        if secs >= start_sec and (end_sec is None or secs <= end_sec):
             kept.append(r)
     data["records"] = kept
 
@@ -276,28 +281,34 @@ def _trim_session(data, seconds):
     laps = data.get("laps") or []
     out_laps = []
     cum = 0.0
-    cum_dist_rec = 0.0
     for l in laps:
         t = float(l.get("total_timer_time", 0) or 0)
-        if cum + t <= seconds + 1e-6:
-            out_laps.append(l)
-            cum += t
+        lap_start, lap_end = cum, cum + t
+        cum = lap_end
+        lo = max(lap_start, start_sec)
+        hi = lap_end if end_sec is None else min(lap_end, end_sec)
+        if hi <= lo + 1e-9:
+            if lap_start >= (end_sec if end_sec is not None else float("inf")):
+                break
             continue
-        remain = seconds - cum
-        if remain > 0:
-            clipped = dict(l)
-            clipped["total_timer_time"] = remain
-            clipped["total_elapsed_time"] = min(
-                float(l.get("total_elapsed_time", remain) or remain), remain)
-            d_end = _dist_at(seconds)
-            d_start = _dist_at(cum)
-            if d_end is not None and d_start is not None and d_end >= d_start:
-                clipped["total_distance"] = d_end - d_start
-            else:  # no distance channel: fall back to linear scaling
-                clipped["total_distance"] = float(l.get("total_distance", 0) or 0) * (remain / t if t else 0)
-            clipped.pop("avg_speed", None)  # recomputed from the clipped values
-            out_laps.append(clipped)
-        break
+
+        if lo <= lap_start + 1e-9 and hi >= lap_end - 1e-9:
+            out_laps.append(l)
+            continue
+
+        clipped = dict(l)
+        clipped["total_timer_time"] = hi - lo
+        clipped["total_elapsed_time"] = min(
+            float(l.get("total_elapsed_time", hi - lo) or (hi - lo)), hi - lo)
+        d_hi, d_lo = _dist_at(hi), _dist_at(lo)
+        if d_hi is not None and d_lo is not None and d_hi >= d_lo:
+            clipped["total_distance"] = d_hi - d_lo
+        else:  # no distance channel: fall back to linear scaling
+            frac = (hi - lo) / t if t else 0
+            clipped["total_distance"] = float(l.get("total_distance", 0) or 0) * frac
+        clipped.pop("avg_speed", None)  # recomputed from the clipped values
+        out_laps.append(clipped)
+
     if out_laps:
         data["laps"] = out_laps
 
@@ -4018,6 +4029,9 @@ def main():
     parser.add_argument("--trim-seconds", type=float, default=None,
                         help="Drop everything after N seconds from the first record "
                              "(e.g. when the device kept recording past the finish)")
+    parser.add_argument("--trim-start-seconds", type=float, default=None,
+                        help="Drop everything before N seconds from the first record "
+                             "(e.g. when recording began while waiting at the start)")
 
     
     args = parser.parse_args()
@@ -4085,10 +4099,12 @@ def main():
         parser.error("file_path is required")
 
     parsed_data = parse_fit(args.file_path)
-    if parsed_data and args.trim_seconds:
-        parsed_data = _trim_session(parsed_data, args.trim_seconds)
-        print(f"✂️ Trimmed to first {args.trim_seconds:.0f}s "
-              f"({sum(float(l.get('total_distance', 0) or 0) for l in parsed_data.get('laps') or [])/1000:.2f}km retained)")
+    if parsed_data and (args.trim_seconds or args.trim_start_seconds):
+        parsed_data = _trim_session(parsed_data, args.trim_seconds, args.trim_start_seconds)
+        lo = args.trim_start_seconds or 0
+        hi = f"{args.trim_seconds:.0f}s" if args.trim_seconds else "end"
+        kept_km = sum(float(l.get('total_distance', 0) or 0) for l in parsed_data.get('laps') or []) / 1000
+        print(f"✂️ Trimmed to {lo:.0f}s..{hi} ({kept_km:.2f}km retained)")
 
     if parsed_data:
         analyzed_data = analyze_rowing(parsed_data, args.max_hr, args.resting_hr)
