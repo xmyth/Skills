@@ -417,6 +417,18 @@ def work_dps(laps):
     return dist / strokes if strokes > 0 else 0.0
 
 
+def _hms_to_sec(txt):
+    """Parse '58:45.54' / '1:02:03' into seconds (0.0 on failure)."""
+    try:
+        parts = [float(x) for x in str(txt).replace(",", ".").split(":")]
+    except (TypeError, ValueError):
+        return 0.0
+    sec = 0.0
+    for x in parts:
+        sec = sec * 60 + x
+    return sec
+
+
 def work_cadence(laps):
     """Time-weighted average rating over work laps: sum(SPM * time) / sum(time).
 
@@ -4137,6 +4149,8 @@ def main():
 
         if args.rest_label:
             analyzed_data.setdefault("session", {})["rest_label"] = args.rest_label
+        if args.official_time:
+            analyzed_data.setdefault("session", {})["official_time"] = args.official_time
         json_dir = os.path.dirname(json_path) or "."
         json_base = os.path.basename(json_path)
         f_prefix = os.path.splitext(json_base)[0]
@@ -4470,6 +4484,14 @@ def generate_xhs_page1(data, output_dir, file_prefix, heading=None):
     # still racing, so excluding that time understates how long the race took.
     td = sum(float(l.get("total_distance",0) or 0) for l in laps)/1000
     tt = sum(float(l.get("total_timer_time",0) or 0) for l in laps)/60
+    # Prefer the calibrated elapsed time, then the official result. Summing lap
+    # times drops the gaps between laps (58:33 vs the real 58:45.54).
+    elapsed_min = float(session.get("total_elapsed_time") or 0) / 60
+    official = session.get("official_time")
+    if official:
+        tt = _hms_to_sec(official) / 60 or tt
+    elif elapsed_min > 0:
+        tt = elapsed_min
     aps = 500/((td*1000)/(tt*60)) if td>0 and tt>0 else 0
     ps = f"{int(aps//60)}:{int(aps%60):02d}" if aps>0 else "--:--"
     tspm=tdps=cnt=0
@@ -4505,11 +4527,15 @@ def generate_xhs_page1(data, output_dir, file_prefix, heading=None):
     cols = [int(img_width*0.21), int(img_width*0.5), int(img_width*0.79)]
     hlbl = ["\u8ddd\u79bb", "\u7528\u65f6", "\u5e73\u5747\u914d\u901f"]
     # Show the duration to the second: rounding to whole minutes hides real
-    # differences (58:01 vs 58:33 both read "58 min").
-    _tot = int(round(tt * 60))
-    _h, _rem = divmod(_tot, 3600)
-    _m, _s2 = divmod(_rem, 60)
-    _tstr = f"{_h}:{_m:02d}:{_s2:02d}" if _h else f"{_m}:{_s2:02d}"
+    # differences (58:01 vs 58:33 both read "58 min"). An official result is
+    # printed verbatim so the card matches the result sheet exactly.
+    if official:
+        _tstr = str(official)
+    else:
+        _tot = int(round(tt * 60))
+        _h, _rem = divmod(_tot, 3600)
+        _m, _s2 = divmod(_rem, 60)
+        _tstr = f"{_h}:{_m:02d}:{_s2:02d}" if _h else f"{_m}:{_s2:02d}"
     htxt = [f"{td:.1f} km", _tstr, f"{ps} /500m"]
     hcol = [gold, gold, accent]
     for i in range(3):
@@ -4602,6 +4628,14 @@ def generate_xhs_page2(data, output_dir, file_prefix, review_text="", heading=No
     # still racing, so excluding that time understates how long the race took.
     td = sum(float(l.get("total_distance",0) or 0) for l in laps)/1000
     tt = sum(float(l.get("total_timer_time",0) or 0) for l in laps)/60
+    # Prefer the calibrated elapsed time, then the official result. Summing lap
+    # times drops the gaps between laps (58:33 vs the real 58:45.54).
+    elapsed_min = float(session.get("total_elapsed_time") or 0) / 60
+    official = session.get("official_time")
+    if official:
+        tt = _hms_to_sec(official) / 60 or tt
+    elif elapsed_min > 0:
+        tt = elapsed_min
     aps = 500/((td*1000)/(tt*60)) if td>0 and tt>0 else 0
     ps = f"{int(aps//60)}:{int(aps%60):02d}" if aps>0 else "--:--"
     tspm=tdps=cnt=0
@@ -4637,11 +4671,15 @@ def generate_xhs_page2(data, output_dir, file_prefix, review_text="", heading=No
     cols = [int(img_width*0.21), int(img_width*0.5), int(img_width*0.79)]
     hlbl = ["\u8ddd\u79bb", "\u7528\u65f6", "\u5e73\u5747\u914d\u901f"]
     # Show the duration to the second: rounding to whole minutes hides real
-    # differences (58:01 vs 58:33 both read "58 min").
-    _tot = int(round(tt * 60))
-    _h, _rem = divmod(_tot, 3600)
-    _m, _s2 = divmod(_rem, 60)
-    _tstr = f"{_h}:{_m:02d}:{_s2:02d}" if _h else f"{_m}:{_s2:02d}"
+    # differences (58:01 vs 58:33 both read "58 min"). An official result is
+    # printed verbatim so the card matches the result sheet exactly.
+    if official:
+        _tstr = str(official)
+    else:
+        _tot = int(round(tt * 60))
+        _h, _rem = divmod(_tot, 3600)
+        _m, _s2 = divmod(_rem, 60)
+        _tstr = f"{_h}:{_m:02d}:{_s2:02d}" if _h else f"{_m}:{_s2:02d}"
     htxt = [f"{td:.1f} km", _tstr, f"{ps} /500m"]
     hcol = [gold, gold, accent]
     for i in range(3):
