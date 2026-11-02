@@ -220,6 +220,29 @@ def parse_fit(file_path):
 
     return data
 
+def _start_time_from_filename(path):
+    """Local start time encoded in an NK export filename, or None.
+
+    NK names exports with the local clock time, e.g.
+    "SpdCoach 2763073 20261031 0207PM.fit" -> 2026-10-31 14:07. The device
+    writes record times in UTC without an offset, so this is the only reliable
+    source of local time for afternoon sessions.
+    """
+    m = re.search(r"(\d{8}) (\d{4})(AM|PM)\.fit$", os.path.basename(path or ""))
+    if not m:
+        return None
+    date_s, time_s, ampm = m.groups()
+    hour, minute = int(time_s[:2]), int(time_s[2:])
+    if ampm == "PM" and hour != 12:
+        hour += 12
+    elif ampm == "AM" and hour == 12:
+        hour = 0
+    try:
+        return datetime.datetime.strptime(date_s, "%Y%m%d").replace(hour=hour, minute=minute)
+    except ValueError:
+        return None
+
+
 def calculate_split(speed_m_s):
     """Helper to convert speed (m/s) to 500m split string."""
     if not speed_m_s or speed_m_s <= 0:
@@ -3972,13 +3995,19 @@ def main():
         analyzed_data = analyze_rowing(parsed_data, args.max_hr, args.resting_hr)
         _enrich_session_weather(analyzed_data)
         _estimate_current(analyzed_data)
-        # Normalize timezone to UTC+8: FIT files may use UTC or local time.
-        # If the hour is 0-4, assume UTC (add 8h). Otherwise assume already local.
+        # Normalize the session start time to local (UTC+8).
+        # NK exports name files with the *local* start time ("... 0207PM.fit"),
+        # so prefer that. FIT record times are UTC but carry no offset, and the
+        # old "hour 0-4 means UTC" heuristic silently missed every afternoon
+        # session (e.g. a 14:07 row was reported as 06:07).
         session = analyzed_data.get("session", {})
         st = session.get("start_time")
         if st:
             if isinstance(st, str): st = datetime.datetime.fromisoformat(st)
-            if st.hour < 5 or st.hour >= 20:
+            from_name = _start_time_from_filename(args.file_path)
+            if from_name and abs((from_name - st).total_seconds()) >= 3600:
+                session["start_time"] = from_name.isoformat()
+            elif st.hour < 5 or st.hour >= 20:
                 session["start_time"] = (st + datetime.timedelta(hours=8)).isoformat()
         json_path = export_analysis_json(analyzed_data, args.file_path, args.max_hr, args.resting_hr)
         print(f"✅ Analysis JSON generated: {json_path}")
