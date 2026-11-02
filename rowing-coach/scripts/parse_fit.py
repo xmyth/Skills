@@ -2734,7 +2734,7 @@ def generate_build_report(data, output_dir, file_prefix, review_text, xhs_post,
             dss = f"{dp:.1f}m" if dp > 0 else "-"
             ir = lap.get("type") == "Rest"
             if ir:
-                nt = "Rest"
+                nt = (data.get("session") or {}).get("rest_label") or "Rest"
                 hn = lap.get("min_heart_rate") or hrv
                 he = f"\u2193{int(hn)}" if hn > 0 else "-"
                 cs = "-"; dss = "-"
@@ -4084,6 +4084,8 @@ def main():
     parser.add_argument("--xhs-post", type=str, default="", help="XHS social media post text (for --build-report)")
     parser.add_argument("--official-time", type=str, default=None,
                         help="Official/chip result as mm:ss(.ss); written into the race summary")
+    parser.add_argument("--rest-label", type=str, default=None,
+                        help="Label for Rest segments in tables (e.g. 掉头 when the pause is a turn)")
     parser.add_argument("--course-distance", type=float, default=None,
                         help="Official course length in metres, used to derive the official pace")
     parser.add_argument("--title", type=str, default=None,
@@ -4133,6 +4135,8 @@ def main():
             'heart_rate_analysis': json_data.get('heart_rate_analysis', {}),
         }
 
+        if args.rest_label:
+            analyzed_data.setdefault("session", {})["rest_label"] = args.rest_label
         json_dir = os.path.dirname(json_path) or "."
         json_base = os.path.basename(json_path)
         f_prefix = os.path.splitext(json_base)[0]
@@ -4462,12 +4466,11 @@ def generate_xhs_page1(data, output_dir, file_prefix, heading=None):
             if weather: date_str += f" · {weather}"
         except: pass
     wlaps = [l for l in laps if l.get("type")!="Rest"]
-    # Header distance/time/pace all use work-segment totals so the three figures
-    # on the card are mutually consistent (and match the Markdown report).
-    _wd, _wt, _wspeed = work_aggregate(laps)
-    td = _wd/1000
-    tt = _wt/60
-    aps = 500/_wspeed if _wspeed>0 else 0
+    # Card totals span every segment, including a mid-race turn: the boat was
+    # still racing, so excluding that time understates how long the race took.
+    td = sum(float(l.get("total_distance",0) or 0) for l in laps)/1000
+    tt = sum(float(l.get("total_timer_time",0) or 0) for l in laps)/60
+    aps = 500/((td*1000)/(tt*60)) if td>0 and tt>0 else 0
     ps = f"{int(aps//60)}:{int(aps%60):02d}" if aps>0 else "--:--"
     tspm=tdps=cnt=0
     hr_prod=0; hr_time=0
@@ -4501,7 +4504,13 @@ def generate_xhs_page1(data, output_dir, file_prefix, heading=None):
         p.text((img_width//2, 75), date_str, fill=t_muted, font=ft_date, anchor="ma")
     cols = [int(img_width*0.21), int(img_width*0.5), int(img_width*0.79)]
     hlbl = ["\u8ddd\u79bb", "\u7528\u65f6", "\u5e73\u5747\u914d\u901f"]
-    htxt = [f"{td:.1f} km", f"{tt:.0f} min", f"{ps} /500m"]
+    # Show the duration to the second: rounding to whole minutes hides real
+    # differences (58:01 vs 58:33 both read "58 min").
+    _tot = int(round(tt * 60))
+    _h, _rem = divmod(_tot, 3600)
+    _m, _s2 = divmod(_rem, 60)
+    _tstr = f"{_h}:{_m:02d}:{_s2:02d}" if _h else f"{_m}:{_s2:02d}"
+    htxt = [f"{td:.1f} km", _tstr, f"{ps} /500m"]
     hcol = [gold, gold, accent]
     for i in range(3):
         hd.text((cols[i], 140), htxt[i], fill=hcol[i], font=ft_hero, anchor="ma")
@@ -4589,12 +4598,11 @@ def generate_xhs_page2(data, output_dir, file_prefix, review_text="", heading=No
             if weather: date_str += f" · {weather}"
         except: pass
     wlaps = [l for l in laps if l.get("type")!="Rest"]
-    # Header distance/time/pace all use work-segment totals so the three figures
-    # on the card are mutually consistent (and match the Markdown report).
-    _wd, _wt, _wspeed = work_aggregate(laps)
-    td = _wd/1000
-    tt = _wt/60
-    aps = 500/_wspeed if _wspeed>0 else 0
+    # Card totals span every segment, including a mid-race turn: the boat was
+    # still racing, so excluding that time understates how long the race took.
+    td = sum(float(l.get("total_distance",0) or 0) for l in laps)/1000
+    tt = sum(float(l.get("total_timer_time",0) or 0) for l in laps)/60
+    aps = 500/((td*1000)/(tt*60)) if td>0 and tt>0 else 0
     ps = f"{int(aps//60)}:{int(aps%60):02d}" if aps>0 else "--:--"
     tspm=tdps=cnt=0
     hr_prod=0; hr_time=0
@@ -4628,7 +4636,13 @@ def generate_xhs_page2(data, output_dir, file_prefix, review_text="", heading=No
         p.text((img_width//2, 75), date_str, fill=t_muted, font=ft_date, anchor="ma")
     cols = [int(img_width*0.21), int(img_width*0.5), int(img_width*0.79)]
     hlbl = ["\u8ddd\u79bb", "\u7528\u65f6", "\u5e73\u5747\u914d\u901f"]
-    htxt = [f"{td:.1f} km", f"{tt:.0f} min", f"{ps} /500m"]
+    # Show the duration to the second: rounding to whole minutes hides real
+    # differences (58:01 vs 58:33 both read "58 min").
+    _tot = int(round(tt * 60))
+    _h, _rem = divmod(_tot, 3600)
+    _m, _s2 = divmod(_rem, 60)
+    _tstr = f"{_h}:{_m:02d}:{_s2:02d}" if _h else f"{_m}:{_s2:02d}"
+    htxt = [f"{td:.1f} km", _tstr, f"{ps} /500m"]
     hcol = [gold, gold, accent]
     for i in range(3):
         hd.text((cols[i], 140), htxt[i], fill=hcol[i], font=ft_hero, anchor="ma")
@@ -4687,7 +4701,7 @@ def generate_xhs_page2(data, output_dir, file_prefix, review_text="", heading=No
             hre=float(lap.get("max_heart_rate")or hr_avg); het=f"\u2191{hre:.0f}" if hre>0 else "-"
             spd=float(lap.get("avg_speed",0))
             dpt=f"{spd/(cd/60):.1f}" if cd>0 and spd>0.5 else "-"
-        if ir: stype="\u4f11\u606f"
+        if ir: stype = session.get("rest_label") or "\u4f11\u606f"
         else: stype=classify_training_zone(float(lap.get("avg_heart_rate",0)),float(lap.get("avg_cadence",0)))
         rd=[slbl,tstr,dstr,pc,smt,hrt,het,dpt,stype]
         for j,val in enumerate(rd):
@@ -4966,7 +4980,7 @@ def generate_combined_chart_image(data, chart_buf):
         dps_str = f"{dps:.1f}" if dps > 0 else "-"
 
         l_type = "Work"
-        if lap.get("type") == "Rest": l_type = "Rest"
+        if lap.get("type") == "Rest": l_type = session.get("rest_label") or "Rest"
         else:
              hr_val = lap.get("avg_heart_rate", 0) or 0
              cad_val = int(lap.get("avg_cadence", 0))
