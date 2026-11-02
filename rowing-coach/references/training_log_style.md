@@ -6,6 +6,21 @@
 - **Actionable**: Provide specific, constructive feedback based on the data.
 - **Encouraging**: Motivate the athlete to improve.
 
+## Units (mandatory)
+
+**All speed must be expressed as 500m pace** (`2:12.3/500m`). This applies to every
+figure in a review, including per-kilometre splits, through-water speed and short
+accelerations.
+
+- Never write `m/s`, `km/h`, or a per-kilometre split like `4:32/km` inside a
+  review. Convert first: `pace_500 = 500 / speed_m_s`, and a per-km split is
+  simply halved (`4:32/km` = `2:16.0/500m`).
+- Mixing units is the specific failure this rule prevents: a review quoting
+  "km8–11 全场低谷 4:32–4:39" reads as absurdly slow next to a 2:12 average,
+  because those were per-kilometre figures.
+- Distance (km/m), duration (m:ss), stroke rate (spm), heart rate (bpm) and DPS
+  (m/stroke) keep their usual units.
+
 ## Structure
 
 ### 1. Session Summary
