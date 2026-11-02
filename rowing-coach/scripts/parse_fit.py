@@ -429,6 +429,51 @@ def _hms_to_sec(txt):
     return sec
 
 
+def _align_to_official(data, official_time):
+    """Scale segment times so they add up to the official result.
+
+    Device segments stop/start at sample boundaries, so their sum falls short of
+    the chip time (58:33 vs 58:45.54 on the 11-01 race). Scaling every segment by
+    the same factor keeps their relative shape while making the table reconcile
+    with the result, and each segment's pace is recomputed from its own distance
+    and the calibrated time.
+    """
+    total_official = _hms_to_sec(official_time)
+    laps = data.get("laps") or []
+    current = sum(float(l.get("total_timer_time", 0) or 0) for l in laps)
+    if total_official <= 0 or current <= 0:
+        return data
+    factor = total_official / current
+    scaled = [float(l.get("total_timer_time", 0) or 0) * factor for l in laps]
+
+    # Make the displayed segments add up to the official second count: round each
+    # one, then let the longest absorb the residual so the column sums exactly
+    # (otherwise truncating three sub-second values lost 1.5s).
+    target = int(total_official)
+    rounded = [int(round(t)) for t in scaled]
+    if rounded:
+        diff = target - sum(rounded)
+        longest = max(range(len(rounded)), key=lambda i: rounded[i])
+        rounded[longest] += diff
+        rounded[longest] = max(0, rounded[longest])
+
+    for l, t, rt in zip(laps, scaled, rounded):
+        d = float(l.get("total_distance", 0) or 0)
+        l["total_timer_time"] = rt
+        l["total_elapsed_time"] = rt
+        if rt > 0:
+            l["avg_speed"] = d / rt
+            l["avg_500m_split"] = calculate_split(d / rt)
+    session = data.setdefault("session", {})
+    session["total_timer_time"] = total_official
+    session["total_elapsed_time"] = total_official
+    session["official_time"] = official_time
+    dist = sum(float(l.get("total_distance", 0) or 0) for l in laps)
+    if total_official > 0:
+        session["avg_speed"] = dist / total_official
+    return data
+
+
 def work_cadence(laps):
     """Time-weighted average rating over work laps: sum(SPM * time) / sum(time).
 
@@ -2693,7 +2738,8 @@ def generate_build_report(data, output_dir, file_prefix, review_text, xhs_post,
 
         f.write(f"*   **Work Distance**: {cwd/1000:.2f} km\n")
         if title:  # race mode: seconds matter
-            f.write(f"*   **Total Time (Elapsed)**: {tt:.1f} min ({_hms(tt*60, 2)})\n")
+            # whole seconds: the hundredths belong on the Official Time line
+            f.write(f"*   **Total Time (Elapsed)**: {tt:.1f} min ({_hms(int(tt*60))})\n")
             f.write(f"*   **Moving Time**: {cmt/60:.1f} min ({_hms(cmt)})\n")
         else:
             f.write(f"*   **Total Time (Elapsed)**: {tt:.1f} min\n")
@@ -4150,7 +4196,7 @@ def main():
         if args.rest_label:
             analyzed_data.setdefault("session", {})["rest_label"] = args.rest_label
         if args.official_time:
-            analyzed_data.setdefault("session", {})["official_time"] = args.official_time
+            _align_to_official(analyzed_data, args.official_time)
         json_dir = os.path.dirname(json_path) or "."
         json_base = os.path.basename(json_path)
         f_prefix = os.path.splitext(json_base)[0]
@@ -4530,7 +4576,10 @@ def generate_xhs_page1(data, output_dir, file_prefix, heading=None):
     # differences (58:01 vs 58:33 both read "58 min"). An official result is
     # printed verbatim so the card matches the result sheet exactly.
     if official:
-        _tstr = str(official)
+        _o = int(_hms_to_sec(official))   # whole seconds, truncated
+        _oh, _orem = divmod(_o, 3600)
+        _om, _os = divmod(_orem, 60)
+        _tstr = f"{_oh}:{_om:02d}:{_os:02d}" if _oh else f"{_om}:{_os:02d}"
     else:
         _tot = int(round(tt * 60))
         _h, _rem = divmod(_tot, 3600)
@@ -4674,7 +4723,10 @@ def generate_xhs_page2(data, output_dir, file_prefix, review_text="", heading=No
     # differences (58:01 vs 58:33 both read "58 min"). An official result is
     # printed verbatim so the card matches the result sheet exactly.
     if official:
-        _tstr = str(official)
+        _o = int(_hms_to_sec(official))   # whole seconds, truncated
+        _oh, _orem = divmod(_o, 3600)
+        _om, _os = divmod(_orem, 60)
+        _tstr = f"{_oh}:{_om:02d}:{_os:02d}" if _oh else f"{_om}:{_os:02d}"
     else:
         _tot = int(round(tt * 60))
         _h, _rem = divmod(_tot, 3600)
