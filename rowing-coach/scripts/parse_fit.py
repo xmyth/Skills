@@ -417,6 +417,17 @@ def work_dps(laps):
     return dist / strokes if strokes > 0 else 0.0
 
 
+def _fmt_dur_min(minutes):
+    """Format a duration given in minutes as m:ss (or h:mm:ss)."""
+    try:
+        total = int(round(float(minutes) * 60))
+    except (TypeError, ValueError):
+        return "-"
+    h, rem = divmod(total, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}"
+
+
 def _hms_to_sec(txt):
     """Parse '58:45.54' / '1:02:03' into seconds (0.0 on failure)."""
     try:
@@ -3235,7 +3246,7 @@ def generate_pacing_chart(data, output_dir, file_prefix, dark_mode=False, chart_
     title_parts = []
     if date_str: title_parts.append(date_str)
     if total_dist > 0: title_parts.append(f"{total_dist:.2f} km")
-    if total_time > 0: title_parts.append(f"{total_time:.1f} min")
+    if total_time > 0: title_parts.append(_fmt_dur_min(total_time))
     title_parts.append(f"{avg_pace} /500m")
     title_parts.append(f"{avg_cad if avg_cad > 0 else '-'} spm")
     title_parts.append(f"{avg_hr if avg_hr > 0 else '-'} bpm")
@@ -5047,7 +5058,7 @@ def generate_combined_chart_image(data, chart_buf):
         except: pass
 
     subtitle_parts.append(f"{dist_km:.2f}km")
-    subtitle_parts.append(f"{time_min:.1f}min")
+    subtitle_parts.append(_fmt_dur_min(time_min))
     subtitle_parts.append(f"{avg_pace}/500m")
     subtitle_parts.append(f"{avg_rate if avg_rate > 0 else '-'}spm")
     subtitle_parts.append(f"{avg_hr if avg_hr > 0 else '-'}bpm")
