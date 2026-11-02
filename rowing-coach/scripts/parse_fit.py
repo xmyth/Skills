@@ -2663,15 +2663,25 @@ def generate_build_report(data, output_dir, file_prefix, review_text, xhs_post,
         ln = data.get("location_name")
         if ln: f.write(f"* **Location**: {ln}\n\n")
         f.write("## Summary\n\n")
-        def _hms(sec):
-            sec = int(round(sec))
-            h, rem = divmod(sec, 3600)
+        def _hms(sec, decimals=0):
+            # Race mode keeps two decimals so the figure matches the official
+            # result exactly (58:45.54) instead of rounding up to 58:46.
+            if decimals:
+                scale = 10 ** decimals
+                total = round(sec * scale)
+                h, rem = divmod(total, 3600 * scale)
+                m, rem2 = divmod(rem, 60 * scale)
+                s2, frac = divmod(rem2, scale)
+                return (f"{h}:{m:02d}:{s2:02d}.{frac:0{decimals}d}" if h
+                        else f"{m}:{s2:02d}.{frac:0{decimals}d}")
+            total = int(round(sec))
+            h, rem = divmod(total, 3600)
             m, s2 = divmod(rem, 60)
             return f"{h}:{m:02d}:{s2:02d}" if h else f"{m}:{s2:02d}"
 
         f.write(f"*   **Work Distance**: {cwd/1000:.2f} km\n")
         if title:  # race mode: seconds matter
-            f.write(f"*   **Total Time (Elapsed)**: {tt:.1f} min ({_hms(tt*60)})\n")
+            f.write(f"*   **Total Time (Elapsed)**: {tt:.1f} min ({_hms(tt*60, 2)})\n")
             f.write(f"*   **Moving Time**: {cmt/60:.1f} min ({_hms(cmt)})\n")
         else:
             f.write(f"*   **Total Time (Elapsed)**: {tt:.1f} min\n")
@@ -2679,6 +2689,9 @@ def generate_build_report(data, output_dir, file_prefix, review_text, xhs_post,
         f.write(f"*   **Avg Pace**: {ap} /500m\n")
         f.write(f"*   **Avg Rate**: {ac} spm\n")
         f.write(f"*   **Avg HR**: {ah} bpm\n")
+        cond = " · ".join(x for x in [s.get("weather"), s.get("wind")] if x)
+        if title and cond:
+            f.write(f"*   **Conditions**: {cond}\n")
         if official_time:
             f.write(f"*   **Official Time**: {official_time}\n")
             if course_distance:
@@ -4160,8 +4173,6 @@ def main():
 
     if parsed_data:
         analyzed_data = analyze_rowing(parsed_data, args.max_hr, args.resting_hr)
-        _enrich_session_weather(analyzed_data)
-        _estimate_current(analyzed_data)
         # Normalize the session start time to local (UTC+8).
         # NK exports name files with the *local* start time ("... 0207PM.fit"),
         # so prefer that. FIT record times are UTC but carry no offset, and the
@@ -4180,6 +4191,11 @@ def main():
                 session["start_time"] = (st + datetime.timedelta(hours=hours)).isoformat()
             elif st.hour < 5 or st.hour >= 20:
                 session["start_time"] = (st + datetime.timedelta(hours=8)).isoformat()
+        # Weather must be looked up AFTER normalisation: it selects the archive
+        # hour from start_time, and doing it first picked the UTC hour (01:00 for
+        # a 09:46 race), reporting the wrong sky and wind.
+        _enrich_session_weather(analyzed_data)
+        _estimate_current(analyzed_data)
         json_path = export_analysis_json(analyzed_data, args.file_path, args.max_hr, args.resting_hr)
         print(f"✅ Analysis JSON generated: {json_path}")
     else:
@@ -4320,9 +4336,11 @@ def _enrich_session_weather(data):
         city = _fetch_city(lat, lon)
         if city:
             session["city"] = city
-        weather = _fetch_weather(lat, lon, dt_local)
+        weather, wind = _fetch_weather(lat, lon, dt_local)
         if weather:
             session["weather"] = weather.strip(" ·")
+        if wind:
+            session["wind"] = wind
     except Exception:
         pass
 
@@ -4353,7 +4371,8 @@ def _fetch_weather(lat, lon, dt):
             f"http://archive-api.open-meteo.com/v1/archive?"
             f"latitude={lat:.4f}&longitude={lon:.4f}"
             f"&start_date={date_str}&end_date={date_str}"
-            f"&hourly=temperature_2m,weather_code&timezone=auto"
+            f"&hourly=temperature_2m,weather_code,wind_speed_10m,wind_direction_10m"
+            f"&timezone=auto"
         )
         req = urllib.request.urlopen(url, timeout=10)
         data = json.loads(req.read())
@@ -4362,7 +4381,7 @@ def _fetch_weather(lat, lon, dt):
         temps = hourly.get("temperature_2m", [])
         codes = hourly.get("weather_code", [])
         if not times or not temps:
-            return ""
+            return "", "", ""
         # Find closest hour
         target_hour = dt.hour
         best_idx = 0
@@ -4387,9 +4406,21 @@ def _fetch_weather(lat, lon, dt):
         }
         emoji, desc = weather_map.get(code, ("", ""))
         weather_str = f"{emoji} {desc} {temp}°C" if emoji else f"{temp}°C"
-        return weather_str
+
+        # Wind matters for rowing: it changes the apparent load per leg.
+        wind_str = ""
+        try:
+            ws = hourly.get("wind_speed_10m") or []
+            wd = hourly.get("wind_direction_10m") or []
+            if ws and wd and best_idx < len(ws) and ws[best_idx] is not None:
+                dirs = ["北", "东北", "东", "东南", "南", "西南", "西", "西北"]
+                compass = dirs[int((wd[best_idx] % 360) / 45 + 0.5) % 8]
+                wind_str = f"{compass}风 {ws[best_idx]:.0f}km/h"
+        except (TypeError, ValueError, IndexError):
+            pass
+        return weather_str, wind_str
     except Exception:
-        return ""
+        return "", ""
 
 def generate_xhs_page1(data, output_dir, file_prefix, heading=None):
     if not PIL_AVAILABLE: return None
