@@ -313,6 +313,15 @@ def _trim_session(data, seconds=None, start_seconds=None):
         data["laps"] = out_laps
 
     session = data.get("session") or {}
+    if start_sec > 0 and session.get("start_time"):
+        # the session now begins at the trim point, so move the clock forward
+        try:
+            st = session["start_time"]
+            if isinstance(st, str):
+                st = datetime.datetime.fromisoformat(st)
+            session["start_time"] = (st + datetime.timedelta(seconds=start_sec)).isoformat()
+        except (ValueError, TypeError):
+            pass
     total_d = sum(float(l.get("total_distance", 0) or 0) for l in out_laps)
     total_t = sum(float(l.get("total_timer_time", 0) or 0) for l in out_laps)
     if out_laps:
@@ -2615,14 +2624,23 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
     
     return json_path
 
-def generate_build_report(data, output_dir, file_prefix, review_text, xhs_post):
-    """Generate MD report with review and XHS post."""
+def generate_build_report(data, output_dir, file_prefix, review_text, xhs_post, title=None):
+    """Generate MD report with review and XHS post.
+
+    `title` overrides the default "<sport> | <dist>km Full Analysis" heading and
+    switches the summary to second-precision times (used for races, where the
+    margin matters and the session may be trimmed to the actual race window).
+    """
     s = data.get("session", {}); laps = data.get("laps", [])
     indoor = s.get("sub_sport") == "indoor_rowing"
     tl = "Indoor Rowing" if indoor else "On-Water Rowing"
     mp = os.path.join(output_dir, f"{file_prefix}.md")
     td = sum(float(l.get("total_distance",0)) for l in laps)/1000
-    tt = sum(float(l.get("total_timer_time",0)) for l in laps)/60
+    # "Elapsed" should be wall-clock time from start to finish. Summing lap
+    # timer times drops the gaps between laps, so prefer the session value.
+    tt = float(s.get("total_elapsed_time") or 0) / 60
+    if tt <= 0:
+        tt = sum(float(l.get("total_timer_time",0)) for l in laps)/60
     cmt=cwd=cps=hrs=0
     for l in laps:
         t=float(l.get("total_timer_time",0))
@@ -2633,20 +2651,30 @@ def generate_build_report(data, output_dir, file_prefix, review_text, xhs_post):
     ac=int(cps/cmt)if cmt>0 else 0; ah=int(hrs/cmt)if cmt>0 else 0
     asp=cwd/cmt if cmt>0 else 0; ap=calculate_split(asp)
     with open(mp, "w") as f:
-        f.write(f"# {tl} | {td:.1f}km Full Analysis\n\n")
+        heading = title or f"{tl} | {td:.1f}km Full Analysis"
+        f.write(f"# {heading}\n\n")
         if s.get("start_time"):
             try:
                 dt = datetime.datetime.fromisoformat(str(s.get("start_time")))
-                dtl = dt
-                ts = dtl.strftime("%Y-%m-%d %H:%M")
+                ts = dt.strftime("%Y-%m-%d %H:%M:%S")
                 f.write(f"* **Date**: {ts}\n")
             except: pass
         ln = data.get("location_name")
         if ln: f.write(f"* **Location**: {ln}\n\n")
         f.write("## Summary\n\n")
+        def _hms(sec):
+            sec = int(round(sec))
+            h, rem = divmod(sec, 3600)
+            m, s2 = divmod(rem, 60)
+            return f"{h}:{m:02d}:{s2:02d}" if h else f"{m}:{s2:02d}"
+
         f.write(f"*   **Work Distance**: {cwd/1000:.2f} km\n")
-        f.write(f"*   **Total Time (Elapsed)**: {tt:.1f} min\n")
-        f.write(f"*   **Moving Time**: {cmt/60:.1f} min\n")
+        if title:  # race mode: seconds matter
+            f.write(f"*   **Total Time (Elapsed)**: {tt:.1f} min ({_hms(tt*60)})\n")
+            f.write(f"*   **Moving Time**: {cmt/60:.1f} min ({_hms(cmt)})\n")
+        else:
+            f.write(f"*   **Total Time (Elapsed)**: {tt:.1f} min\n")
+            f.write(f"*   **Moving Time**: {cmt/60:.1f} min\n")
         f.write(f"*   **Avg Pace**: {ap} /500m\n")
         f.write(f"*   **Avg Rate**: {ac} spm\n")
         f.write(f"*   **Avg HR**: {ah} bpm\n")
@@ -4026,6 +4054,9 @@ def main():
     parser.add_argument("--build-report", metavar="JSON_FILE", help="Build MD + images from JSON analysis")
     parser.add_argument("--review", type=str, default="", help="Coach review text (for --build-report)")
     parser.add_argument("--xhs-post", type=str, default="", help="XHS social media post text (for --build-report)")
+    parser.add_argument("--title", type=str, default=None,
+                        help="Override the report heading (e.g. a race name); also switches "
+                             "the summary to second-precision times")
     parser.add_argument("--trim-seconds", type=float, default=None,
                         help="Drop everything after N seconds from the first record "
                              "(e.g. when the device kept recording past the finish)")
@@ -4074,7 +4105,7 @@ def main():
         json_base = os.path.basename(json_path)
         f_prefix = os.path.splitext(json_base)[0]
 
-        md_path = generate_build_report(analyzed_data, json_dir, f_prefix, args.review, args.xhs_post)
+        md_path = generate_build_report(analyzed_data, json_dir, f_prefix, args.review, args.xhs_post, args.title)
         print(f"📝 Markdown: {md_path}")
 
         chart_buffer = generate_pacing_chart(analyzed_data, json_dir, f_prefix)
@@ -4121,7 +4152,11 @@ def main():
             if isinstance(st, str): st = datetime.datetime.fromisoformat(st)
             from_name = _start_time_from_filename(args.file_path)
             if from_name and abs((from_name - st).total_seconds()) >= 3600:
-                session["start_time"] = from_name.isoformat()
+                # The filename only carries minutes, so apply the whole-hour
+                # offset it implies instead of replacing the value: replacing
+                # would throw away the seconds of the FIT timestamp.
+                hours = round((from_name - st).total_seconds() / 3600)
+                session["start_time"] = (st + datetime.timedelta(hours=hours)).isoformat()
             elif st.hour < 5 or st.hour >= 20:
                 session["start_time"] = (st + datetime.timedelta(hours=8)).isoformat()
         json_path = export_analysis_json(analyzed_data, args.file_path, args.max_hr, args.resting_hr)
