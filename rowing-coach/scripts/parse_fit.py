@@ -2624,7 +2624,8 @@ def export_analysis_json(data, input_file_path, max_hr=MAX_HR, resting_hr=RESTIN
     
     return json_path
 
-def generate_build_report(data, output_dir, file_prefix, review_text, xhs_post, title=None):
+def generate_build_report(data, output_dir, file_prefix, review_text, xhs_post,
+                          title=None, official_time=None, course_distance=None):
     """Generate MD report with review and XHS post.
 
     `title` overrides the default "<sport> | <dist>km Full Analysis" heading and
@@ -2678,6 +2679,20 @@ def generate_build_report(data, output_dir, file_prefix, review_text, xhs_post, 
         f.write(f"*   **Avg Pace**: {ap} /500m\n")
         f.write(f"*   **Avg Rate**: {ac} spm\n")
         f.write(f"*   **Avg HR**: {ah} bpm\n")
+        if official_time:
+            f.write(f"*   **Official Time**: {official_time}\n")
+            if course_distance:
+                def _to_sec(txt):
+                    parts = [float(x) for x in str(txt).replace(",", ".").split(":")]
+                    sec = 0.0
+                    for x in parts:
+                        sec = sec * 60 + x
+                    return sec
+                os_sec = _to_sec(official_time)
+                if os_sec > 0 and course_distance > 0:
+                    op = 500 * os_sec / float(course_distance)
+                    f.write(f"*   **Official Pace**: {int(op//60)}:{op%60:04.1f} /500m"
+                            f" ({float(course_distance)/1000:.2f} km course)\n")
         f.write("\n---\n")
         f.write("## Pacing Chart\n\n")
         f.write(f"![Chart]({file_prefix}.png)\n")
@@ -4054,6 +4069,10 @@ def main():
     parser.add_argument("--build-report", metavar="JSON_FILE", help="Build MD + images from JSON analysis")
     parser.add_argument("--review", type=str, default="", help="Coach review text (for --build-report)")
     parser.add_argument("--xhs-post", type=str, default="", help="XHS social media post text (for --build-report)")
+    parser.add_argument("--official-time", type=str, default=None,
+                        help="Official/chip result as mm:ss(.ss); written into the race summary")
+    parser.add_argument("--course-distance", type=float, default=None,
+                        help="Official course length in metres, used to derive the official pace")
     parser.add_argument("--title", type=str, default=None,
                         help="Override the report heading (e.g. a race name); also switches "
                              "the summary to second-precision times")
@@ -4105,7 +4124,9 @@ def main():
         json_base = os.path.basename(json_path)
         f_prefix = os.path.splitext(json_base)[0]
 
-        md_path = generate_build_report(analyzed_data, json_dir, f_prefix, args.review, args.xhs_post, args.title)
+        md_path = generate_build_report(analyzed_data, json_dir, f_prefix, args.review,
+                                        args.xhs_post, args.title,
+                                        args.official_time, args.course_distance)
         print(f"📝 Markdown: {md_path}")
 
         chart_buffer = generate_pacing_chart(analyzed_data, json_dir, f_prefix)
@@ -4115,11 +4136,11 @@ def main():
                 print(f"🖼️ Chart Image: {chart_path}")
                 chart_buffer.seek(0)
 
-        xhs1 = generate_xhs_page1(analyzed_data, json_dir, f_prefix)
+        xhs1 = generate_xhs_page1(analyzed_data, json_dir, f_prefix, heading=args.title)
         if xhs1:
             print(f"📱 XHS Page 1: {xhs1}")
 
-        xhs2 = generate_xhs_page2(analyzed_data, json_dir, f_prefix, args.review)
+        xhs2 = generate_xhs_page2(analyzed_data, json_dir, f_prefix, args.review, heading=args.title)
         if xhs2:
             print(f"📱 XHS Page 2: {xhs2}")
 
@@ -4370,11 +4391,12 @@ def _fetch_weather(lat, lon, dt):
     except Exception:
         return ""
 
-def generate_xhs_page1(data, output_dir, file_prefix):
+def generate_xhs_page1(data, output_dir, file_prefix, heading=None):
     if not PIL_AVAILABLE: return None
     session = data.get("session", {}); laps = data.get("laps", [])
     is_indoor = session.get("sub_sport") == "indoor_rowing"
-    type_label = "\U0001f6a3 \u5ba4\u5185\u5212\u8239" if is_indoor else "\U0001f6a3 \u6c34\u4e0a\u8bad\u7ec3"
+    # A race passes its event name here so the card leads with the race, not "水上训练".
+    type_label = heading or ("\U0001f6a3 \u5ba4\u5185\u5212\u8239" if is_indoor else "\U0001f6a3 \u6c34\u4e0a\u8bad\u7ec3")
     img_width = 900; padding = 24
     bg_top = (10,22,40); bg_mid = (26,42,74); bg_bot = (15,32,64)
     accent = (91,192,190); gold = (200,180,155)
@@ -4502,11 +4524,11 @@ def generate_xhs_page1(data, output_dir, file_prefix):
     return path
 
 
-def generate_xhs_page2(data, output_dir, file_prefix, review_text=""):
+def generate_xhs_page2(data, output_dir, file_prefix, review_text="", heading=None):
     if not PIL_AVAILABLE: return None
     session = data.get("session", {}); laps = data.get("laps", [])
     is_indoor = session.get("sub_sport") == "indoor_rowing"
-    type_label = "\U0001f6a3 \u5ba4\u5185\u5212\u8239" if is_indoor else "\U0001f6a3 \u6c34\u4e0a\u8bad\u7ec3"
+    type_label = heading or ("\U0001f6a3 \u5ba4\u5185\u5212\u8239" if is_indoor else "\U0001f6a3 \u6c34\u4e0a\u8bad\u7ec3")
     img_width = 900; padding = 24
     bg_top = (10,22,40); bg_mid = (26,42,74); bg_bot = (15,32,64)
     accent = (91,192,190); gold = (200,180,155)
