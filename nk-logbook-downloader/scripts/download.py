@@ -181,12 +181,35 @@ def main():
     existing_keys = parse_existing_timestamps(output_dir)
 
     print("Fetching session list…")
-    try:
-        sessions = list_sessions(jwt)
-    except requests.RequestException as e:
-        print(f"Failed to fetch sessions: {e}", file=sys.stderr)
-        if JWT_FILE.exists():
-            JWT_FILE.unlink()
+    sessions = None
+    last_err = None
+    for attempt in range(3):
+        try:
+            sessions = list_sessions(jwt)
+            break
+        except requests.HTTPError as e:
+            # Only an auth rejection means the token is actually bad. Deleting it
+            # on any failure once threw away a token valid until 2031 because of a
+            # transient TLS error.
+            last_err = e
+            code = getattr(e.response, "status_code", None)
+            if code in (401, 403):
+                print(f"Token rejected (HTTP {code}); clearing .jwt, please re-login.",
+                      file=sys.stderr)
+                if JWT_FILE.exists():
+                    JWT_FILE.unlink()
+                sys.exit(1)
+            print(f"Attempt {attempt + 1} failed (HTTP {code}), retrying…", file=sys.stderr)
+            time.sleep(2 * (attempt + 1))
+        except requests.RequestException as e:
+            last_err = e
+            print(f"Attempt {attempt + 1} failed ({e.__class__.__name__}), retrying…",
+                  file=sys.stderr)
+            time.sleep(2 * (attempt + 1))
+
+    if sessions is None:
+        print(f"Failed to fetch sessions after retries: {last_err}", file=sys.stderr)
+        print("The saved token was kept; this looks like a network problem.", file=sys.stderr)
         sys.exit(1)
 
     print(f"Found {len(sessions)} total sessions.")
