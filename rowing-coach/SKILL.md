@@ -34,27 +34,40 @@ python3 scripts/parse_fit.py <path_to_fit_file>
    - **Next Session** (🎯 下次训练): Actionable drill or focus
 4. Generate a Xiaohongshu social media post in Chinese using this format:
 ```
-🚣 [日期] 水上训练 | [距离] [训练类型]
+🚣 [日期] · [艇型] · [距离] [训练类型]
 
 📊 今日数据
-· 距离：[dist]km
-· 用时：[time]min
-· 配速：[pace]/500m
-· 桨频：[spm]spm · 心率：[hr]bpm
-· [城市] · [weather emoji] [天气] [temp]°C
+· 距离 [dist]km
+· 用时 [time]min
+· 配速 [pace]/500m
+· 桨频 [spm]spm · 心率 [hr]bpm（最高 [max]bpm）
+· [城市] · [天气] [temp]°C · [风向] [风速]km/h
 
-📋 分段详情
-🔥 [dist]m @ [pace] · [spm]spm · HR[hr]
-💤 休息  ↓[min_hr]
-... (one line per segment, 🔥 for hot zones AT/TR/AN, 💤 for rest)
+📋 分段（配速 /500m）
+🔥 [dist]m · [pace] · [spm]spm · HR [hr] · DPS [dps]
+💤 休息 [dist]m · [time]
+... (one line per segment; 🔥 work, 💤 rest, nothing else)
 
 💡 教练点评
-· [highlight with specific pace/SPM/DPS data]
+· [highlight with pace/SPM/DPS data]
 · [improvement point with segment reference]
-· [next session drill with target metrics]
+· [next session drill with target metric]
 
-#赛艇 #rowing #[tag]
+#赛艇 #rowing #[艇型] #[训练类型]
 ```
+
+Formatting rules (keep the block scannable):
+
+- **One separator style**: `·` with a single space on both sides. Never mix `|`,
+  `@`, `：` or `  •  ` inside the same post.
+- **Data block**: every line starts with `·`, written as `label value` with no
+  colon (`· 距离 12.4km`, not `· 距离：12.4km`).
+- **Unit spacing**: `HR 158`, `DPS 10.8`, `2:26.3`; but `19spm` and `12.4km` stay
+  glued, matching how rowers write them.
+- **Segments are data only**. Narrative remarks ("first two reps too slow",
+  "the cooldown ran long") belong in 教练点评, never as 💤 lines in the segment
+  list — that was the main source of clutter.
+- **At most 4 bullets** in 教练点评; each must carry a number or a target.
 5. Build all outputs:
 ```bash
 python3 scripts/parse_fit.py --build-report <file.json> \
