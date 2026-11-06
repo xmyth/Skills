@@ -2877,7 +2877,13 @@ def generate_build_report(data, output_dir, file_prefix, review_text, xhs_post,
         if xhs_post:
             f.write("---\n")
             f.write("## Social Media Post\n\n")
-            f.write(xhs_post + "\n")
+            # Markdown joins consecutive lines inside a paragraph, so the post
+            # rendered as one long line. Two trailing spaces are a hard break:
+            # each line keeps its own row in every viewer, and the text still
+            # copies out cleanly.
+            for line in xhs_post.splitlines():
+                text = line.rstrip()
+                f.write((text + "  " if text else "") + "\n")
     return mp
 
 def _make_single_chart(df, chart_type, laps=None, best_efforts=None, dark_mode=False):
